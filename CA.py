@@ -241,6 +241,7 @@ class AE(nn.Module):
                     best_acc = result['Total']
                     ckpt = ckpt.split(".pth")[0] + "_best.pth"
                 torch.save({"AE": self.state_dict(), "AE_optim": self.optimizer.state_dict(), "epoch": epoch}, ckpt)
+                clean_old_checkpoints(ckpt_folder)
 
             self.epoch_end(epoch, result)
             history.append(result)
@@ -361,3 +362,24 @@ def hyperparameter_tuning(parameters, train_loader, val_loader, transform, trans
                 break
 
     return optimal_parameters
+
+###############
+#Checkpointing#
+###############
+
+#TODO Refactor this function that looks ugly
+
+def clean_old_checkpoints(ckpt_folder, best_keep=2, total_keep=10):
+    assert(best_keep <= total_keep)
+    poor_keep = total_keep - best_keep
+    poor_ckpts = sorted([file for file in os.listdir(ckpt_folder) if "_best" not in file])
+    best_ckpts = sorted([file for file in os.listdir(ckpt_folder) if "_best" in file])
+    if len(poor_ckpts)+len(best_ckpts)>total_keep :
+        if(len(best_ckpts)>best_keep):
+            for file in best_ckpts[:-best_keep] :
+                file_path = os.path.join(ckpt_folder, file)
+                os.remove(file_path)
+        if(len(poor_ckpts)>poor_keep):
+            for file in poor_ckpts[:-poor_keep]:
+                file_path = os.path.join(ckpt_folder, file)
+                os.remove(file_path)

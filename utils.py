@@ -7,6 +7,7 @@ import nibabel as nib
 import torch
 import torchvision
 
+from typing import Callable
 from PIL import Image
 from medpy.metric import binary
 from scipy import stats
@@ -21,13 +22,53 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ##Data preparation##
 ####################
 
+def find_segmentaion(root_dir:str, keywords:list) -> list :
+    segmentations = []
+    for subDirectory in os.listdir(root_dir):
+        subPath = os.path.join(root_dir, subDirectory)
+        if os.path.isdir(subPath):
+            segmentations.append(find_segmentaion(subPath, keywords))
+        else :
+            for keyword in keywords:
+                if keyword in subDirectory:
+                    segmentations.append(os.path.join(root_dir, subDirectory))
+        
+    return segmentations
+
 def crop_image(image):
+    """
+    Returns the sections of the image containing non zero values ; i.e the smallest 3D box containing actual segmentation.
+
+    Parameters
+    ----------
+    image: array
+        The three dimensional matrix representation of the segmentation
+
+    """
     nonzero_mask = binary_fill_holes(image != 0)
     mask_voxel_coords = np.stack(np.where(nonzero_mask))
     minidx = np.min(mask_voxel_coords, axis=1)
     maxidx = np.max(mask_voxel_coords, axis=1) + 1
     resizer = tuple([slice(*i) for i in zip(minidx,maxidx)])
     return resizer
+
+def structure_dataset_names(REL_DATA_LOCATION, newLocation = "structured"):
+    # TODO: Also remove files which don't have the right masks or images ; and make sure README is moved
+    DATA_LOCATION = os.path.join(os.getcwd(), REL_DATA_LOCATION)                    # Absolute path to location
+    NEW_DATA_LOCATION = os.path.join(os.path.dirname(DATA_LOCATION), newLocation)   # Path of new transformed data
+    os.rename(os.path.join(DATA_LOCATION, "README"), os.path.join(os.path.dirname(DATA_LOCATION), "README"))
+    patients = sorted(os.listdir(DATA_LOCATION))
+    assert(len(patients) <=1000 ), "Dataset is too large. Make sure N <= 1000"
+
+    if not os.path.isdir(NEW_DATA_LOCATION):
+        os.mkdir(NEW_DATA_LOCATION)
+
+    for id, patient in enumerate(patients):
+        current_name = os.path.join(DATA_LOCATION, patient)
+        new_name = os.path.join(NEW_DATA_LOCATION, "patient{:03d}".format(id))
+        os.rename(current_name, new_name)
+
+    os.rmdir(DATA_LOCATION)
 
 def generate_patient_info(folder, patient_ids):
     num_patients = sum(os.path.isdir(folder + i) for i in os.listdir(folder))
@@ -37,7 +78,7 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id] = {
             k:v for k,v in np.loadtxt(
                 os.path.join(patient_folder, "Info.cfg"),
-                dtype=str, delimiter=': '
+                dtype=str, delimiter=':'
             )
         }
         patient_info[id]["ED"] = int(patient_info[id]["ED"])
@@ -46,6 +87,7 @@ def generate_patient_info(folder, patient_ids):
         image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}.nii.gz".format(id, patient_info[id]["ED"])))
         patient_info[id]["shape_ED"] = image.get_fdata().shape
         patient_info[id]["crop_ED"] = crop_image(image.get_fdata())
+        
         image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}.nii.gz".format(id, patient_info[id]["ES"])))
         patient_info[id]["shape_ES"] = image.get_fdata().shape   
         patient_info[id]["crop_ES"] = crop_image(image.get_fdata())
@@ -54,13 +96,92 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["header"] = image.header
         patient_info[id]["affine"] = image.affine
     return patient_info
-  
+
+def generate_patient_info_brain(folder, verbose = False):
+    patients_list  =sorted(os.listdir(folder))
+    if patients_list[-1] == "patient_info.npy" : patients_list.pop(-1)
+    patient_ids = [i for i in range(len(patients_list))]
+    patient_ids.remove(9) # removing absent images or masks
+    patient_info = {}
+    for id in patient_ids:
+        patient_folder = os.path.join(folder, 'patient{:03d}'.format(id))
+        image = nib.load(os.path.join(patient_folder, "image.nii.gz"))
+        patient_info[id] = {} # Initialising it
+        patient_info[id]["shape"] = image.get_fdata().shape
+        patient_info[id]["crop"] = crop_image(image.get_fdata())
+
+        patient_info[id]["spacing"] = image.header["pixdim"][[3,2,1]]
+        patient_info[id]["header"] = image.header
+        patient_info[id]["affine"] = image.affine
+        if(id%10 == 0 and verbose) : 
+            print("Just processed patient {PATIENT_ID:03d} out of {TOTAL:03d}".format(PATIENT_ID = id, TOTAL=len(patient_ids)))
+    return patient_info
+
+def spacing_target(folder: str) -> list:
+    """
+    Returns a spacing target as the median of all patients' spacing
+
+    Parameters
+    ----------
+    folder : str
+        The directory containing patient_info.npy
+
+    """
+
+    path = os.path.join(folder, "patient_info.npy")
+    patient_info = np.load(path, allow_pickle=True).item()
+    spacing_target = np.median(np.array([patient_info[key]["spacing"] for key in patient_info.keys()]), axis=0)
+    spacing_target[0] = 1
+    return spacing_target
+
+
+def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [],verbose: bool = False) -> None: 
+    patient_ids = [i for i in patient_ids]
+    patient_ids = [id for id in patient_ids if id not in skip]
+    for id in patient_ids:
+        patient_folder = get_patient_folder(folder, id)
+        images = []
+        fname = get_fname()
+        fname = os.path.join(patient_folder, fname)
+        if(not os.path.isfile(fname)):
+            continue
+        image, processed_shape = preprocess_image(
+            nib.load(fname).get_fdata().astype(int),
+            patient_info[id]["crop"],
+            patient_info[id]["spacing"],
+            spacing_target
+        )
+        # If depth of image changes after processing, it should be recorded
+        patient_info[id]["processed_shape"] = processed_shape
+        images.append(image)
+        images = np.vstack(images)
+        np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
+        if(id%10 == 0 and verbose) : 
+            print("Finished processing patient {:03d}".format(id))
+    np.save(os.path.join(folder_out, "patient_info"), patient_info)
+    
 def preprocess_image(image, crop, spacing, spacing_target):
+    """
+    Returns a cropped and resized version of the image according to the specified attributes
+
+    Parameters
+    ----------
+        image: array
+            The three dimensional matrix representation of the image
+        crop: list
+            The resizer, usually the output of crop_image()
+        spacing: list
+            The current image spacing
+        spacing_target:
+            The target image spacing
+    """
+
+    if len(image.shape) == 4: image = image[:, :, :, 0] # Removing the useless time dimension
     image = image[crop].transpose(2,1,0)
     spacing_target[0] = spacing[0]
     new_shape = np.round(spacing / spacing_target * image.shape).astype(int)
     image = resize_segmentation(image, new_shape, order=1)
-    return image
+    return image, new_shape
 
 def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, get_patient_folder, get_fname):
     for id in patient_ids:
@@ -178,8 +299,11 @@ class ACDCPatient(torch.utils.data.Dataset):
     def __len__(self):
         return self.info["shape_ED"][2] + self.info["shape_ES"][2]
 
+#TODO : remove prints
     def __getitem__(self, slice_id):
         data = np.load(os.path.join(self.root_dir, "patient{:03d}.npy".format(self.id)))
+        print("data shape : {}".format(np.shape(data)))
+        print("slice_id = {}".format(slice_id))
         sample = data[slice_id]
         if self.transform:
             sample = self.transform(sample)
@@ -232,6 +356,75 @@ class ACDCDataLoader():
 
     def current_id(self):
         return self.patient_ids[self.counter_id]
+
+
+############################
+##Brain Dataset and Loader##
+############################
+class SYNDalaLoader() :
+    def __init__(self, root_dir, patient_ids, batch_size=None, transform=None):
+        self.root_dir = root_dir
+        self.patient_ids = patient_ids
+        self.batch_size = batch_size
+        self.transform = transform
+        self.patient_loaders = []
+        if batch_size is not None:
+            for id in self.patient_ids:
+                self.patient_loaders.append(torch.utils.data.DataLoader(
+                    SYNPatient(root_dir, id, transform=transform),
+                    batch_size=batch_size, shuffle=False, num_workers=0
+                ))
+        self.counter_id = 0
+
+    def set_batch_size(self, batch_size):
+        self.patient_loaders = []
+        for id in self.patient_ids:
+            self.patient_loaders.append(torch.utils.data.DataLoader(
+                SYNPatient(self.root_dir, id, transform=self.transform),
+                batch_size=batch_size, shuffle=False, num_workers=0
+            ))
+    
+    def set_transform(self, transform):
+        self.transform = transform
+        for loader in self.patient_loaders:
+            loader.dataset.transform = transform
+
+    def __iter__(self):
+        self.counter_iter = 0
+        return self
+
+    def __next__(self):
+        if(self.counter_iter == len(self)):
+            raise StopIteration
+        loader = self.patient_loaders[self.counter_id]
+        self.counter_id += 1
+        self.counter_iter += 1
+        if self.counter_id%len(self) == 0:
+            self.counter_id = 0
+        return loader
+
+    def __len__(self):
+        return len(self.patient_ids)
+
+    def current_id(self):
+        return self.patient_ids[self.counter_id]
+
+class SYNPatient(torch.utils.data.Dataset):
+    def __init__(self, root_dir, patient_id, transform=None):
+        self.root_dir = root_dir
+        self.id = patient_id
+        self.info = np.load(os.path.join(root_dir,"patient_info.npy"), allow_pickle=True).item()[patient_id]
+        self.transform = transform
+
+    def __len__(self):
+        return self.info["processed_shape"][0]
+
+    def __getitem__(self, slice_id):
+        data = np.load(os.path.join(self.root_dir, "patient{:03d}.npy".format(self.id)))
+        sample = data[slice_id]
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
     
 ###########
 ##Testing##
