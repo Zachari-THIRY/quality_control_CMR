@@ -22,35 +22,75 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ##Data preparation##
 ####################
 
-def find_segmentaion(root_dir:str, keywords:list) -> list :
-    segmentations = []
-    for subDirectory in os.listdir(root_dir):
-        subPath = os.path.join(root_dir, subDirectory)
-        if os.path.isdir(subPath):
-            segmentations.append(find_segmentaion(subPath, keywords))
-        else :
-            for keyword in keywords:
-                if keyword in subDirectory:
-                    segmentations.append(os.path.join(root_dir, subDirectory))
-        
-    return segmentations
+#TODO Solve the empty array concatention issue (eg. run on data/heart/testing)
 
-def crop_image(image):
+def find_segmentations(root_dir:str, keywords: list, absolute: bool) -> list :
     """
-    Returns the sections of the image containing non zero values ; i.e the smallest 3D box containing actual segmentation.
+    Returns a list of all the paths to segmentations matching the keywords list. 
+    If absolute is True, then absolute paths are returned. Otherwise, relative paths are given.
 
     Parameters
     ----------
-    image: array
-        The three dimensional matrix representation of the segmentation
+        root_dir: str
+            The path in which to search for segmentations
+        keywords: list
+            The list of strings to search for a match
+        absolute: bool
+            If True, absolute paths are returned
+    """
+    segmentations = []
+    cwd = os.getcwd() if absolute else ""
+    for dirElement in os.listdir(root_dir):
+        subPath = os.path.join(root_dir, dirElement)
+        if os.path.isdir(subPath):
+            segmentations.append(find_segmentations(subPath, keywords, absolute))
+        else :
+            for keyword in keywords:
+                if keyword in dirElement:
+                    path = os.path.join(cwd,root_dir, dirElement)
+                    segmentations.append(path)
+        
+    return np.unique(np.hstack(segmentations))
+
+#TODO Implement
+
+def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz") -> None:
 
     """
-    nonzero_mask = binary_fill_holes(image != 0)
-    mask_voxel_coords = np.stack(np.where(nonzero_mask))
-    minidx = np.min(mask_voxel_coords, axis=1)
-    maxidx = np.max(mask_voxel_coords, axis=1) + 1
-    resizer = tuple([slice(*i) for i in zip(minidx,maxidx)])
-    return resizer
+    The purpose of this method is to uniformize the dataset so that all other functions work on the same directory architecture.
+    All segmentations pointed by segmentation_paths will be moved to destination_folder/patientXXX/fileName
+
+    Parameters
+    ----------
+        segmentation_paths:
+            A list of all the paths of the segmentations to be restructured, length must be <= 1000
+        destination_folder:
+            The new root_folder of the dataset. Both relative and absolute paths are accepted
+        fileName:
+            The name of the new segmentation files
+
+    Note
+    ----
+        This limit of 1000 is solely dued to how the names are formatted (here :03d ; see source code). \n
+        The limit can be removed if the patient folder names are adjusted throughout the code.
+
+    """
+
+    assert fileName.endswith(".nii.gz"), "fileName must end with .nii.gz"
+    assert(len(segmentation_paths) <=1000 ), "Dataset is too large. Make sure N <= 1000"
+
+    os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
+    
+    segmentation_paths.sort()
+    curPath = os.path.join(os.getcwd(), destination_folder)
+    os.makedirs(curPath) if not os.path.exists(curPath) else None
+    for i,segmentation_path in enumerate(segmentation_paths):
+        target_folder = os.path.join(curPath, "patient{:03d}".format(i))
+        os.makedirs(target_folder) if not os.path.exists(target_folder) else None
+        target_name = os.path.join(target_folder, fileName)
+        os.rename(segmentation_path, target_name)
+
+#TODO : deprecate structure_dataset_name
 
 def structure_dataset_names(REL_DATA_LOCATION, newLocation = "structured"):
     # TODO: Also remove files which don't have the right masks or images ; and make sure README is moved
@@ -69,6 +109,24 @@ def structure_dataset_names(REL_DATA_LOCATION, newLocation = "structured"):
         os.rename(current_name, new_name)
 
     os.rmdir(DATA_LOCATION)
+
+
+def crop_image(image):
+    """
+    Returns the sections of the image containing non zero values ; i.e the smallest 3D box containing actual segmentation.
+
+    Parameters
+    ----------
+    image: array
+        The three dimensional matrix representation of the segmentation
+
+    """
+    nonzero_mask = binary_fill_holes(image != 0)
+    mask_voxel_coords = np.stack(np.where(nonzero_mask))
+    minidx = np.min(mask_voxel_coords, axis=1)
+    maxidx = np.max(mask_voxel_coords, axis=1) + 1
+    resizer = tuple([slice(*i) for i in zip(minidx,maxidx)])
+    return resizer
 
 def generate_patient_info(folder, patient_ids):
     num_patients = sum(os.path.isdir(folder + i) for i in os.listdir(folder))
