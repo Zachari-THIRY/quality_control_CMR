@@ -94,6 +94,9 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
 #TODO : deprecate structure_dataset_name
 
 def structure_dataset_names(REL_DATA_LOCATION, newLocation = "structured"):
+    """
+    Deprecated, use structure_dataset instead
+    """
     # TODO: Also remove files which don't have the right masks or images ; and make sure README is moved
     DATA_LOCATION = os.path.join(os.getcwd(), REL_DATA_LOCATION)                    # Absolute path to location
     NEW_DATA_LOCATION = os.path.join(os.path.dirname(DATA_LOCATION), newLocation)   # Path of new transformed data
@@ -260,7 +263,33 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
 
-def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [],verbose: bool = False) -> None: 
+def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [], verbose: bool = False) -> None: 
+    """
+    For each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
+    preprocess_brain() also updates the patient_info[id]["processed_shapes"] the reflect the new shape from the preprocess.
+
+    Parameters:
+    -----------
+        patient_ids: range / list
+            The ids of the patients to be preprocessed
+        patient_info: dict
+            The generated patient info from generate_patient_info()
+        spacing_target: 
+            The target spacing, usually given by spacing_target()
+        folder: str
+            The initial location of the patients
+        folder_out: str
+            The output location 
+        get_patient_folder: Callable[[], str]
+            A function returning the custom name of the patients folder
+        get_fname: Callable[[], str]
+            A function returning the custom name of the patients masks
+        skip: list
+            A list of the ids to skip , optional
+        verbose: bool
+            When True, will display progress every 10 patients preprocessed
+
+    """
     #TODO : make sure this line below works fine
     patient_ids = [i for i in patient_ids if i not in skip]
     for id in patient_ids:
@@ -374,6 +403,26 @@ class SpatialTransform():
         return sample[0,0]
     
 class ACDCPatient(torch.utils.data.Dataset):
+    """
+    The Dataset class representing one patient.
+
+    Attributes
+    ----------
+        id: int
+            The id of the patient. It is a unique identifier
+        info: dict
+            The corresponding item from patient_info. See generate_patient_info for details
+        transform: torchvision.transforms.transforms.Compose
+            The transforms applied to the patient data
+
+    Methods
+    -------
+        __len__
+            Returns the number of layers if the data matrix
+        __getitem__
+            Takes the specified layer (by the slice_id parameter), applies transformation and returns it
+        
+    """
     def __init__(self, root_dir, patient_id, transform=None):
         self.root_dir = root_dir
         self.id = patient_id
@@ -446,6 +495,11 @@ class ACDCDataLoader():
 ##Brain Dataset and Loader##
 ############################
 class SYNDalaLoader() :
+    """
+    Loops through the patients, layer by layer.
+
+
+    """
     def __init__(self, root_dir, patient_ids, batch_size=None, transform=None):
         self.root_dir = root_dir
         self.patient_ids = patient_ids
@@ -494,6 +548,27 @@ class SYNDalaLoader() :
         return self.patient_ids[self.counter_id]
 
 class SYNPatient(torch.utils.data.Dataset):
+    """
+    The Dataset class representing one patient.
+
+    Attributes
+    ----------
+        id: int
+            The id of the patient. It is a unique identifier
+        info: dict
+            The corresponding item from patient_info. See generate_patient_info for details
+        transform: torchvision.transforms.transforms.Compose
+            The transforms applied to the patient data
+
+    Methods
+    -------
+        __len__
+            Returns the number of layers if the data matrix
+        __getitem__
+            Takes the specified layer (by the slice_id parameter), applies transformation and returns it
+        
+    """
+
     def __init__(self, root_dir, patient_id, transform=None):
         self.root_dir = root_dir
         self.id = patient_id
@@ -533,7 +608,22 @@ def evaluate_metrics(prediction, reference):
             results["HD" + key] = np.nan
     return results
 
-def postprocess_image(image, info, phase, current_spacing):
+def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:list):
+    """
+    Takes the input image along with some information, and applies reverse transformation from the preprocessing step.
+
+    Parameters
+    ----------
+        image: np.array
+            The generated output from the auto encoder
+        info: dict
+            The corresponding patient_info to that image
+        phase: str
+            The image phase ("ED" or "ES")
+        current_spacing: list
+            The current image spacing.
+    """
+
     postprocessed = np.zeros(info["shape_{}".format(phase)])
     crop = info["crop_{}".format(phase)]
     original_shape = postprocessed[crop].shape
@@ -550,6 +640,19 @@ def postprocess_image(image, info, phase, current_spacing):
     return postprocessed
 #TODO : Generalise postprocessing
 def postprocess_image_brain(image, info, current_spacing):
+    """
+    Takes the input image along with some information, and applies reverse transformation from the preprocessing step.
+
+    Parameters
+    ----------
+        image: np.array
+            The generated output from the auto encoder
+        info: dict
+            The corresponding patient_info to that image
+        current_spacing: list
+            The current image spacing.
+    """
+
     postprocessed = np.zeros(info["shape"])
     crop = info["crop"]
     original_shape = postprocessed[crop].shape
