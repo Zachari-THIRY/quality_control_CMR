@@ -8,6 +8,7 @@ import torch
 import torchvision
 
 from typing import Callable
+from IPython.display import display
 from PIL import Image
 from medpy.metric import binary
 from scipy import stats
@@ -142,11 +143,11 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["ED"] = int(patient_info[id]["ED"])
         patient_info[id]["ES"] = int(patient_info[id]["ES"])
 
-        image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}.nii.gz".format(id, patient_info[id]["ED"])))
+        image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}_gt.nii.gz".format(id, patient_info[id]["ED"])))
         patient_info[id]["shape_ED"] = image.get_fdata().shape
         patient_info[id]["crop_ED"] = crop_image(image.get_fdata())
         
-        image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}.nii.gz".format(id, patient_info[id]["ES"])))
+        image = nib.load(os.path.join(patient_folder, "patient{:03d}_frame{:02d}_gt.nii.gz".format(id, patient_info[id]["ES"])))
         patient_info[id]["shape_ES"] = image.get_fdata().shape   
         patient_info[id]["crop_ES"] = crop_image(image.get_fdata())
 
@@ -155,7 +156,32 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["affine"] = image.affine
     return patient_info
 
-def generate_patient_info_brain(folder, verbose = False):
+def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", verbose: bool = False, verbose_rate: int = 10):
+    """
+    Generates patient info from the structructured dataset in folder, based on the fileName files.\n
+
+    Parameters
+    ----------
+        folder: str
+            The root folder containing the structured dataset
+        fileName: str
+            The generic filename of each mask ; it should be the same for every patient
+        verbose: bool
+            Enables the progress display every verbose_rate units processed
+        verbose_rate: int
+            The step with which progress is displayed ; by default every 10 units
+    
+    Gathered information :
+    ----------------------
+        Shape of the original image: "shape",
+        The resizer used for cropping: "crop",
+        The original spacing: "spacing",
+        The original image header: "header",
+        The image affine: "affine".
+    """
+
+    assert verbose_rate > 0, f"The verbose rate should be positivie, but verbose_rate = {verbose_rate} was passed."
+
     patients_list  =sorted(os.listdir(folder))
     if patients_list[-1] == "patient_info.npy" : patients_list.pop(-1)
     patient_ids = [i for i in range(len(patients_list))]
@@ -163,7 +189,7 @@ def generate_patient_info_brain(folder, verbose = False):
     patient_info = {}
     for id in patient_ids:
         patient_folder = os.path.join(folder, 'patient{:03d}'.format(id))
-        image = nib.load(os.path.join(patient_folder, "image.nii.gz"))
+        image = nib.load(os.path.join(patient_folder, fileName))
         patient_info[id] = {} # Initialising it
         patient_info[id]["shape"] = image.get_fdata().shape
         patient_info[id]["crop"] = crop_image(image.get_fdata())
@@ -171,7 +197,7 @@ def generate_patient_info_brain(folder, verbose = False):
         patient_info[id]["spacing"] = image.header["pixdim"][[3,2,1]]
         patient_info[id]["header"] = image.header
         patient_info[id]["affine"] = image.affine
-        if(id%10 == 0 and verbose) : 
+        if(id%verbose_rate == 0 and verbose) : 
             print("Just processed patient {PATIENT_ID:03d} out of {TOTAL:03d}".format(PATIENT_ID = id, TOTAL=len(patient_ids)))
     return patient_info
 
@@ -192,32 +218,6 @@ def spacing_target(folder: str) -> list:
     spacing_target[0] = 1
     return spacing_target
 
-
-def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [],verbose: bool = False) -> None: 
-    patient_ids = [i for i in patient_ids]
-    patient_ids = [id for id in patient_ids if id not in skip]
-    for id in patient_ids:
-        patient_folder = get_patient_folder(folder, id)
-        images = []
-        fname = get_fname()
-        fname = os.path.join(patient_folder, fname)
-        if(not os.path.isfile(fname)):
-            continue
-        image, processed_shape = preprocess_image(
-            nib.load(fname).get_fdata().astype(int),
-            patient_info[id]["crop"],
-            patient_info[id]["spacing"],
-            spacing_target
-        )
-        # If depth of image changes after processing, it should be recorded
-        patient_info[id]["processed_shape"] = processed_shape
-        images.append(image)
-        images = np.vstack(images)
-        np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
-        if(id%10 == 0 and verbose) : 
-            print("Finished processing patient {:03d}".format(id))
-    np.save(os.path.join(folder_out, "patient_info"), patient_info)
-    
 def preprocess_image(image, crop, spacing, spacing_target):
     """
     Returns a cropped and resized version of the image according to the specified attributes
@@ -259,6 +259,32 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
             images.append(image)
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
+
+def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [],verbose: bool = False) -> None: 
+    #TODO : make sure this line below works fine
+    patient_ids = [i for i in patient_ids if i not in skip]
+    for id in patient_ids:
+        patient_folder = get_patient_folder(folder, id)
+        images = []
+        fname = get_fname()
+        fname = os.path.join(patient_folder, fname)
+        if(not os.path.isfile(fname)):
+            continue
+        image, processed_shape = preprocess_image(
+            nib.load(fname).get_fdata().astype(int),
+            patient_info[id]["crop"],
+            patient_info[id]["spacing"],
+            spacing_target
+        )
+        # If depth of image changes after processing, it should be recorded
+        patient_info[id]["processed_shape"] = processed_shape
+        images.append(image)
+        images = np.vstack(images)
+        np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
+        if(verbose and id%10 == 0) : 
+            print("Finished processing patient {:03d}".format(id))
+    np.save(os.path.join(folder_out, "patient_info"), patient_info)
+    
 
 ###########
 ##Dataset##
@@ -522,6 +548,22 @@ def postprocess_image(image, info, phase, current_spacing):
     image = np.argmax(image, axis=0)
     postprocessed[crop] = image
     return postprocessed
+#TODO : Generalise postprocessing
+def postprocess_image_brain(image, info, current_spacing):
+    postprocessed = np.zeros(info["shape"])
+    crop = info["crop"]
+    original_shape = postprocessed[crop].shape
+    original_spacing = info["spacing"]
+    tmp_shape = tuple(np.round(original_spacing[1:] / current_spacing[1:] * original_shape[:2]).astype(int)[::-1])
+    image = np.argmax(image, axis=1)
+    image = np.array([torchvision.transforms.Compose([
+            AddPadding(tmp_shape), CenterCrop(tmp_shape), OneHot()
+        ])(slice) for slice in image]
+    )
+    image = resize_segmentation(image.transpose(1,3,2,0), image.shape[1:2]+original_shape,order=1)
+    image = np.argmax(image, axis=0)
+    postprocessed[crop] = image
+    return postprocessed
   
 def testing(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
     ae.eval()
@@ -554,6 +596,38 @@ def testing(ae, test_loader, patient_info, folder_predictions, folder_out, curre
                     nib.Nifti1Image(reconstruction[phase], patient_info[id]["affine"], patient_info[id]["header"]),
                     os.path.join(folder_out, 'patient{:03d}_{}.nii.gz'.format(id, phase))
                 )
+    return results
+
+#TODO: Generalize testing
+
+def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
+    ae.eval()
+    with torch.no_grad():
+        results = {}
+        for patient in test_loader:
+            id = patient.dataset.id
+            prediction, reconstruction = [], []
+            for batch in patient: 
+                batch = {"prediction": batch.to(device)}
+                batch["reconstruction"] = ae.forward(batch["prediction"])
+                prediction = torch.cat([prediction, batch["prediction"]], dim=0) if len(prediction)>0 else batch["prediction"]
+                reconstruction = torch.cat([reconstruction, batch["reconstruction"]], dim=0) if len(reconstruction)>0 else batch["reconstruction"]
+            prediction = prediction.cpu().numpy(),
+            reconstruction = reconstruction.cpu().numpy()
+
+            reconstruction = postprocess_image_brain(reconstruction, patient_info[id], current_spacing)
+            folder_out_patient = os.path.join(folder_out, "patient{:03d}".format(id))
+
+            results["patient{:03d}".format(id)] = evaluate_metrics(
+                nib.load(os.path.join(folder_predictions, f"patient{id:03d}", "mask.nii.gz")).get_fdata(),
+                reconstruction
+            )
+            if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
+            
+            nib.save(
+                nib.Nifti1Image(reconstruction, patient_info[id]["affine"], patient_info[id]["header"]),
+                os.path.join(folder_out_patient,'mask.nii.gz')
+            )
     return results
   
 def display_image(img):
