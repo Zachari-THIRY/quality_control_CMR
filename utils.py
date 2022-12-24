@@ -6,6 +6,7 @@ import seaborn as sns
 import nibabel as nib
 import torch
 import torchvision
+import shutil
 
 from typing import Callable
 from IPython.display import display
@@ -25,7 +26,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #TODO Solve the empty array concatention issue (eg. run on data/heart/testing)
 
-def find_segmentations(root_dir:str, keywords: list, absolute: bool) -> list :
+def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> list :
     """
     Returns a list of all the paths to segmentations matching the keywords list. 
     If absolute is True, then absolute paths are returned. Otherwise, relative paths are given.
@@ -39,6 +40,7 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool) -> list :
         absolute: bool
             If True, absolute paths are returned
     """
+    assert type(keywords) != str, "Parameter keywords must be a list of str."
     segmentations = []
     cwd = os.getcwd() if absolute else ""
     for dirElement in os.listdir(root_dir):
@@ -55,7 +57,7 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool) -> list :
 
 #TODO Implement
 
-def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz") -> None:
+def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz", delete: str=None) -> None:
 
     """
     The purpose of this method is to uniformize the dataset so that all other functions work on the same directory architecture.
@@ -63,12 +65,14 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
 
     Parameters
     ----------
-        segmentation_paths:
+        segmentation_paths: list
             A list of all the paths of the segmentations to be restructured, length must be <= 1000
-        destination_folder:
+        destination_folder: str
             The new root_folder of the dataset. Both relative and absolute paths are accepted
-        fileName:
+        fileName: str
             The name of the new segmentation files
+        delete: str
+            If set to a string path, then specified folder will be deleted. Default: None.
 
     Note
     ----
@@ -90,6 +94,12 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
         os.makedirs(target_folder) if not os.path.exists(target_folder) else None
         target_name = os.path.join(target_folder, fileName)
         os.rename(segmentation_path, target_name)
+
+    if delete is not None:
+        try:
+            shutil.rmtree(delete, ignore_errors=False)
+        except:
+            print("Could not delete specified folder")
 
 #TODO : deprecate structure_dataset_name
 
@@ -204,22 +214,24 @@ def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", verbos
             print("Just processed patient {PATIENT_ID:03d} out of {TOTAL:03d}".format(PATIENT_ID = id, TOTAL=len(patient_ids)))
     return patient_info
 
-def spacing_target(folder: str) -> list:
+def median_spacing_target(folder: str, round=2) -> list:
     """
-    Returns a spacing target as the median of all patients' spacing
+    Returns a spacing target as the median of all patients' spacing, rounded to specified decimal.
 
     Parameters
     ----------
-    folder : str
-        The directory containing patient_info.npy
-
+        folder: str
+            The directory containing patient_info.npy
+        round: int
+            The number of decimals of the rounding
     """
+
 
     path = os.path.join(folder, "patient_info.npy")
     patient_info = np.load(path, allow_pickle=True).item()
     spacing_target = np.median(np.array([patient_info[key]["spacing"] for key in patient_info.keys()]), axis=0)
     spacing_target[0] = 1
-    return spacing_target
+    return np.round(spacing_target, round)
 
 def preprocess_image(image, crop, spacing, spacing_target):
     """
@@ -236,8 +248,10 @@ def preprocess_image(image, crop, spacing, spacing_target):
         spacing_target:
             The target image spacing
     """
+    # Removing the unused time dimension
+    if len(image.shape) == 4: image = image[:, :, :, 0] 
+    if len(crop) == 4: crop = crop[:3] 
 
-    if len(image.shape) == 4: image = image[:, :, :, 0] # Removing the useless time dimension
     image = image[crop].transpose(2,1,0)
     spacing_target[0] = spacing[0]
     new_shape = np.round(spacing / spacing_target * image.shape).astype(int)
@@ -621,7 +635,7 @@ def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:li
         phase: str
             The image phase ("ED" or "ES")
         current_spacing: list
-            The current image spacing.
+            The current image spacing, which corresponds to the median_spacing_target() of the training.
     """
 
     postprocessed = np.zeros(info["shape_{}".format(phase)])
@@ -638,6 +652,7 @@ def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:li
     image = np.argmax(image, axis=0)
     postprocessed[crop] = image
     return postprocessed
+
 #TODO : Generalise postprocessing
 def postprocess_image_brain(image, info, current_spacing):
     """
@@ -650,11 +665,14 @@ def postprocess_image_brain(image, info, current_spacing):
         info: dict
             The corresponding patient_info to that image
         current_spacing: list
-            The current image spacing.
+            The current image spacing, which corresponds to the median_spacing_target() of the training.
     """
 
-    postprocessed = np.zeros(info["shape"])
-    crop = info["crop"]
+    shape = info["shape"]
+    shape = shape if len(info["shape"]) == 3 else shape[:3]
+
+    postprocessed = np.zeros(shape)
+    crop = info["crop"][:3]
     original_shape = postprocessed[crop].shape
     original_spacing = info["spacing"]
     tmp_shape = tuple(np.round(original_spacing[1:] / current_spacing[1:] * original_shape[:2]).astype(int)[::-1])
