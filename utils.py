@@ -41,7 +41,7 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> 
             If True, absolute paths are returned
     """
     assert type(keywords) != str, "Parameter keywords must be a list of str."
-    segmentations = []
+    segmentations = [[]]
     cwd = os.getcwd() if absolute else ""
     for dirElement in os.listdir(root_dir):
         subPath = os.path.join(root_dir, dirElement)
@@ -603,24 +603,57 @@ class SYNPatient(torch.utils.data.Dataset):
 ##Testing##
 ###########
 
-def evaluate_metrics(prediction, reference):
+def evaluate_metrics(prediction, reference, keys: list = None):
+    # NB : for the heart, keys = ["_RV", "_MYO", "_LV"]
     results = {}
-    for c,key in enumerate(["_RV", "_MYO", "_LV"],start=1):
+    if keys == None:
         ref = np.copy(reference)
         pred = np.copy(prediction)
-
-        ref = ref if c==0 else np.where(ref!=c, 0, ref)
-        pred = pred if c==0 else np.where(np.rint(pred)!=c, 0, pred)
-
         try:
-            results["DSC" + key] = binary.dc(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+            results["DSC"] = binary.dc(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
         except:
-            results["DSC" + key] = 0
+            results["DSC"] = 0
         try:
-            results["HD" + key] = binary.hd(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+            results["HD"] = binary.hd(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
         except:
-            results["HD" + key] = np.nan
+            results["HD"] = np.nan
+    else : 
+        for c,key in enumerate(keys,start=1):
+            ref = np.copy(reference)
+            pred = np.copy(prediction)
+
+            ref = ref if c==0 else np.where(ref!=c, 0, ref)
+            pred = pred if c==0 else np.where(np.rint(pred)!=c, 0, pred)
+
+            try:
+                results["DSC" + key] = binary.dc(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+            except:
+                results["DSC" + key] = 0
+            try:
+                results["HD" + key] = binary.hd(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+            except:
+                results["HD" + key] = np.nan
     return results
+        
+
+# def evaluate_metrics(prediction, reference):
+#     results = {}
+#     for c,key in enumerate(["_RV", "_MYO", "_LV"],start=1):
+#         ref = np.copy(reference)
+#         pred = np.copy(prediction)
+
+#         ref = ref if c==0 else np.where(ref!=c, 0, ref)
+#         pred = pred if c==0 else np.where(np.rint(pred)!=c, 0, pred)
+
+#         try:
+#             results["DSC" + key] = binary.dc(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+#         except:
+#             results["DSC" + key] = 0
+#         try:
+#             results["HD" + key] = binary.hd(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
+#         except:
+#             results["HD" + key] = np.nan
+#     return results
 
 def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:list):
     """
@@ -711,7 +744,8 @@ def testing(ae, test_loader, patient_info, folder_predictions, folder_out, curre
                 reconstruction[phase] = postprocess_image(reconstruction[phase], patient_info[id], phase, current_spacing)
                 results[phase]["patient{:03d}".format(id)] = evaluate_metrics(
                     nib.load(os.path.join(folder_predictions, "patient{:03d}_{}.nii.gz".format(id, phase))).get_fdata(),
-                    reconstruction[phase]
+                    reconstruction[phase], 
+                    keys = ["_RV", "_MYO", "_LV"]
                 )
                 nib.save(
                     nib.Nifti1Image(reconstruction[phase], patient_info[id]["affine"], patient_info[id]["header"]),
@@ -741,7 +775,8 @@ def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out,
 
             results["patient{:03d}".format(id)] = evaluate_metrics(
                 nib.load(os.path.join(folder_predictions, f"patient{id:03d}", "mask.nii.gz")).get_fdata(),
-                reconstruction
+                reconstruction,
+                keys = None
             )
             if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
             
