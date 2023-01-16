@@ -7,6 +7,7 @@ import nibabel as nib
 import torch
 import torchvision
 import shutil
+import gzip
 
 from typing import Callable
 from IPython.display import display
@@ -55,12 +56,60 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> 
         
     return np.unique(np.hstack(segmentations))
 
-#TODO Implement
+# def convert_file(file_path: str, inPlace: bool = True, rename: str = None, delete: bool = False):
+#     """
+#     Takes as input a file and compresses it using gunzip.
 
-def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz", delete: str=None) -> None:
+#     Parameters
+#     ----------
+
+#         file_path: str
+#             The string path of the file to compress
+#         inPlace: bool
+#             If True, inPlace compression without rename is done. If false, rename and delete must be specified
+#         rename: str
+#             The new name (path) of the compressed file. By default : None
+#         delete: bool
+#             If True, deletes the given file_path after compression
+        
+    
+#     """
+#     assert (inPlace==True and rename is None) or (inPlace ==False and rename is not None), "Rename option is only available if compression is not done in place. Please change parameters."
+#     assert(rename != file_path), "The new name must be different in case of in place compression."
+#     if rename is not None:
+#         assert type(rename) == str, 'The rename parameter does not match the required type'
+
+#     new_path = file_path if inPlace == True else rename
+
+#     with open(file_path, 'rb') as f_in:
+#         with gzip.open(new_path, 'wb') as f_out:
+#             shutil.copyfileobj(f_in, f_out)
+#             f_out.close()
+#         f_in.close()
+
+#     if delete : os.remove(file_path)
+
+def gunzip_and_replace(filePath:str):
+    """
+    Gunzips the given file and removes the previous one. Output will be in the same directory, suffixed by the .gz file identifier.
+
+    Parameters
+    ----------
+
+        filePath: str
+            The string path of the file to gunzip.
+    """
+    with open(filePath, 'rb') as f_in:
+        with gzip.open(filePath + '.gz', 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+            f_out.close()
+        f_in.close()
+    os.remove(filePath)
+
+def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz", delete: list=None) -> None:
 
     """
-    The purpose of this method is to uniformize the dataset so that all other functions work on the same directory architecture.
+    This method uniformizes the dataset so that all other functions work on the same directory architecture.
     All segmentations pointed by segmentation_paths will be moved to destination_folder/patientXXX/fileName
 
     Parameters
@@ -71,8 +120,8 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
             The new root_folder of the dataset. Both relative and absolute paths are accepted
         fileName: str
             The name of the new segmentation files
-        delete: str
-            If set to a string path, then specified folder will be deleted. Default: None.
+        delete: list(str)
+            If set to a string path or a list of string paths, then specified folders will be deleted. Default: None.
 
     Note
     ----
@@ -80,26 +129,38 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
         The limit can be removed if the patient folder names are adjusted throughout the code.
 
     """
+    ####
+    # Doing some type and length checks on the segmentation paths : 
+    for path in segmentation_paths :
+        assert path.endswith("nii.gz") or path.endswith('.nii'), f"segmentation must be of type .nii or .nii.gz but {path} was given"
 
     assert fileName.endswith(".nii.gz"), "fileName must end with .nii.gz"
     assert(len(segmentation_paths) <=1000 ), "Dataset is too large. Make sure N <= 1000"
 
+    ####
+
     os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
     
     segmentation_paths.sort()
-    curPath = os.path.join(os.getcwd(), destination_folder)
-    os.makedirs(curPath) if not os.path.exists(curPath) else None
+    destination_folder = os.path.join(os.getcwd(), destination_folder)
+    os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
     for i,segmentation_path in enumerate(segmentation_paths):
-        target_folder = os.path.join(curPath, "patient{:03d}".format(i))
-        os.makedirs(target_folder) if not os.path.exists(target_folder) else None
-        target_name = os.path.join(target_folder, fileName)
+        convert = True if segmentation_path.endswith(".nii") else False
+
+        patient_target_folder = os.path.join(destination_folder, "patient{:03d}".format(i))
+        os.makedirs(patient_target_folder) if not os.path.exists(patient_target_folder) else None
+        target_name = os.path.join(patient_target_folder, fileName[:-3]) if convert else os.path.join(patient_target_folder, fileName)
         os.rename(segmentation_path, target_name)
+        if convert : gunzip_and_replace(target_name)
+
 
     if delete is not None:
-        try:
-            shutil.rmtree(delete, ignore_errors=False)
-        except:
-            print("Could not delete specified folder")
+        delete = np.array([delete]) if type(delete) == str else delete # Making delete iterable in case it's a simple string
+        for path in delete:
+            try:
+                shutil.rmtree(path, ignore_errors=False)
+            except:
+                print("Could not delete specified folder {}".format(path))
 
 #TODO : deprecate structure_dataset_name
 
@@ -169,20 +230,22 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["affine"] = image.affine
     return patient_info
 
-def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", verbose: bool = False, verbose_rate: int = 10):
+def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", skip:list = [], verbose: bool = False, verbose_rate: int = 10):
     """
     Generates patient info from the structructured dataset in folder, based on the fileName files.\n
 
     Parameters
     ----------
         folder: str
-            The root folder containing the structured dataset
+            The root folder containing the structured dataset.
         fileName: str
-            The generic filename of each mask ; it should be the same for every patient
+            The generic filename of each mask ; it should be the same for every patient.
+        skip: list
+            The integer list of the ids to skip.
         verbose: bool
-            Enables the progress display every verbose_rate units processed
+            Enables the progress display every verbose_rate units processed.
         verbose_rate: int
-            The step with which progress is displayed ; by default every 10 units
+            The step with which progress is displayed ; by default every 10 units.
     
     Gathered information :
     ----------------------
@@ -198,12 +261,13 @@ def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", verbos
     patients_list  =sorted(os.listdir(folder))
     if patients_list[-1] == "patient_info.npy" : patients_list.pop(-1)
     patient_ids = [i for i in range(len(patients_list))]
-    patient_ids.remove(9) # removing absent images or masks
+    for id in skip:
+        patient_ids.remove(id) # removing absent images or masks
     patient_info = {}
     for id in patient_ids:
         patient_folder = os.path.join(folder, 'patient{:03d}'.format(id))
         image = nib.load(os.path.join(patient_folder, fileName))
-        patient_info[id] = {} # Initialising it
+        patient_info[id] = {} # Initialising the dict for specified id
         patient_info[id]["shape"] = image.get_fdata().shape
         patient_info[id]["crop"] = crop_image(image.get_fdata())
 
@@ -754,6 +818,7 @@ def testing(ae, test_loader, patient_info, folder_predictions, folder_out, curre
     return results
 
 #TODO: Generalize testing
+#TODO: Add option to save results dict
 
 def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
     ae.eval()
@@ -847,6 +912,11 @@ def process_results(models, folder_GT, folder_pGT):
                     plots["pGT_{}_{}".format(measure,label)] += list(df["p{}_{}".format(measure,label)])
     print(count_nan)
     return plots
+
+def process_results_brain(folder_GT:str, folder_PGT:str):
+    pass
+
+
   
 def display_plots(plots):
     plt.rcParams['xtick.labelsize'] = 30#'x-large'
