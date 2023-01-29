@@ -56,39 +56,6 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> 
         
     return np.unique(np.hstack(segmentations))
 
-# def convert_file(file_path: str, inPlace: bool = True, rename: str = None, delete: bool = False):
-#     """
-#     Takes as input a file and compresses it using gunzip.
-
-#     Parameters
-#     ----------
-
-#         file_path: str
-#             The string path of the file to compress
-#         inPlace: bool
-#             If True, inPlace compression without rename is done. If false, rename and delete must be specified
-#         rename: str
-#             The new name (path) of the compressed file. By default : None
-#         delete: bool
-#             If True, deletes the given file_path after compression
-        
-    
-#     """
-#     assert (inPlace==True and rename is None) or (inPlace ==False and rename is not None), "Rename option is only available if compression is not done in place. Please change parameters."
-#     assert(rename != file_path), "The new name must be different in case of in place compression."
-#     if rename is not None:
-#         assert type(rename) == str, 'The rename parameter does not match the required type'
-
-#     new_path = file_path if inPlace == True else rename
-
-#     with open(file_path, 'rb') as f_in:
-#         with gzip.open(new_path, 'wb') as f_out:
-#             shutil.copyfileobj(f_in, f_out)
-#             f_out.close()
-#         f_in.close()
-
-#     if delete : os.remove(file_path)
-
 def gunzip_and_replace(filePath:str):
     """
     Gunzips the given file and removes the previous one. Output will be in the same directory, suffixed by the .gz file identifier.
@@ -341,9 +308,10 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
 
-def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] , skip: list = [], verbose: bool = False) -> None: 
+def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] ,alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
+    # TODO : Remove hardcoded folders
     """
-    For each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
+    Produces a .npy for each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
     preprocess_brain() also updates the patient_info[id]["processed_shapes"] the reflect the new shape from the preprocess.
 
     Parameters:
@@ -362,13 +330,16 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
             A function returning the custom name of the patients folder
         get_fname: Callable[[], str]
             A function returning the custom name of the patients masks
-        skip: list
+        alter_image: Callable, optional
+            By default None ; will apply the specified alteration to the image before it is saved.
+        skip: list, optional
             A list of the ids to skip , optional
-        verbose: bool
+        verbose: bool, optional
             When True, will display progress every 10 patients preprocessed
 
     """
-    #TODO : make sure this line below works fine
+    if not os.path.exists(folder_out) : os.makedirs(folder_out)
+
     patient_ids = [i for i in patient_ids if i not in skip]
     for id in patient_ids:
         patient_folder = get_patient_folder(folder, id)
@@ -377,12 +348,28 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
         fname = os.path.join(patient_folder, fname)
         if(not os.path.isfile(fname)):
             continue
+        
+        sample = nib.load(fname).get_fdata().astype(int)
+        # Apply optional alteration (eg. a model ; used to test the AE) and saves it
+        if alter_image is not None:
+            for i in range(np.shape(sample)[2]):
+                sample[:,:,i] = alter_image(sample[:,:,i])
+
+            folder_out_patient = os.path.join('data/liver','measures/structured_model', f'patient{id:03d}')
+            if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
+
+            nib.save(
+                    nib.Nifti1Image(sample, patient_info[id]["affine"], patient_info[id]["header"]),
+                    os.path.join(folder_out_patient,'mask.nii.gz')
+                )
+
         image, processed_shape = preprocess_image(
-            nib.load(fname).get_fdata().astype(int),
+            sample,
             patient_info[id]["crop"],
             patient_info[id]["spacing"],
             spacing_target
         )
+
         # If depth of image changes after processing, it should be recorded
         patient_info[id]["processed_shape"] = processed_shape
         images.append(image)
@@ -719,6 +706,92 @@ def evaluate_metrics(prediction, reference, keys: list = None):
 #             results["HD" + key] = np.nan
 #     return results
 
+def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, test_ids:list='default' ):
+    """
+        Given a model 'alter_image', will generate model_GT, and run the AE on it to output a model_pGT"
+    """
+
+
+    # Creating the required paths
+    required_paths = ["measures", "measures/preprocessed_model"]
+    for path in required_paths:
+        full_path = os.path.join(data_path, path)
+        if not os.path.exists(full_path): os.makedirs(full_path)
+    
+    # Gathering info about the patients and dataset
+    patient_info = np.load(os.path.join(data_path,'preprocessed/patient_info.npy'), allow_pickle=True).item()
+    spacing = median_spacing_target(os.path.join(data_path, "preprocessed"), 2)
+    optimal_parameters = np.load(os.path.join("data/liver/preprocessed", "optimal_parameters.npy"), allow_pickle=True).item()
+    BATCH_SIZE = optimal_parameters["BATCH_SIZE"]
+    test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
+
+    # Creates nii.gz for the model_GT, and preprocesses that model_GT for the AE to run
+    preprocess_brain(
+        test_ids, patient_info, spacing,
+        os.path.join(data_path,"structured/"), os.path.join(data_path,"measures/preprocessed_model/"),
+        lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id)),
+        lambda : "mask.nii.gz",
+        verbose=False,
+        alter_image=alter_image
+        )
+    
+
+    test_loader = SYNDalaLoader(os.path.join(data_path, "measures/preprocessed_model"), test_ids, batch_size=BATCH_SIZE, transform=transform)
+    
+    # Evaluates the model data with the trained AE
+    _ = testing_brain(
+        ae=ae,
+        test_loader=test_loader,
+        patient_info=patient_info,
+        folder_predictions=os.path.join(data_path, "measures/preprocessed_model"),
+        folder_out=os.path.join(data_path, "measures/pGT"),
+        current_spacing=spacing,
+        compute_results=False)
+
+def compute_results(data_path, test_ids = 'default'):
+    # TODO : assert that required functions have been executed prior
+    # TODO : Add HD option, parametrized
+    # TODO : Put it as a dictionary
+    # TODO : use evaluate_metrics within compute_results
+    """
+    Computes plottable and relevant results to evaluate the AE's performance on model data.
+    Returns (GT_to_model_GT, GT_to_model_pGT) as X,Y
+
+    Parameters
+    ----------
+        data_path:str
+            A string of the absolute or relative path to the specific root data folder eg. data/{application}
+    
+    Additional details
+    ------------------
+    GT_to_model_GT contains metric evaluations for the real GT and the model generated GT
+    GT_to_model_pGT contains metric evaluations between the real GT and the pGT generated from the model
+
+    The idea is that, if a model performs well, GT and model_GT will be close --> Low distance between GT and model_pGT.
+    If on the contratry a model performs badly, GT and model_GT will be different --> High distance between GT and model_pGT
+    """
+    test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
+
+    GT_to_model_GT = []
+    GT_to_model_pGT = []
+
+    for id in test_ids:
+        # Retrieving the paths of all the images to compute results from
+        path_model_GT = os.path.join(data_path, 'measures/structured_model/patient{:03d}/mask.nii.gz').format(id)
+        path_GT = os.path.join(data_path, 'structured/patient{:03d}/mask.nii.gz').format(id)
+        path_model_pGT = os.path.join(data_path, 'measures/pGT/patient{:03d}/mask.nii.gz').format(id)
+        # Retrievinf the images
+        model_GT = nib.load(path_model_GT).get_fdata()
+        GT = nib.load(path_GT).get_fdata()
+        model_pGT = nib.load(path_model_pGT).get_fdata()
+        # Appending the results
+        GT_to_model_GT.append(binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_GT)!=0, 1, 0)))
+        GT_to_model_pGT.append(binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_pGT)!=0, 1, 0)))
+
+    return GT_to_model_GT, GT_to_model_pGT
+
+
+
 def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:list):
     """
     Takes the input image along with some information, and applies reverse transformation from the preprocessing step.
@@ -820,7 +893,8 @@ def testing(ae, test_loader, patient_info, folder_predictions, folder_out, curre
 #TODO: Generalize testing
 #TODO: Add option to save results dict
 
-def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
+def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing, compute_results = True):
+    # Option compute_results was added so that if needed, results don't have to be computed
     ae.eval()
     with torch.no_grad():
         results = {}
@@ -837,12 +911,12 @@ def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out,
 
             reconstruction = postprocess_image_brain(reconstruction, patient_info[id], current_spacing)
             folder_out_patient = os.path.join(folder_out, "patient{:03d}".format(id))
-
-            results["patient{:03d}".format(id)] = evaluate_metrics(
-                nib.load(os.path.join(folder_predictions, f"patient{id:03d}", "mask.nii.gz")).get_fdata(),
-                reconstruction,
-                keys = None
-            )
+            if compute_results :
+                results["patient{:03d}".format(id)] = evaluate_metrics(
+                    nib.load(os.path.join(folder_predictions, f"patient{id:03d}", "mask.nii.gz")).get_fdata(),
+                    reconstruction,
+                    keys = None
+                )
             if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
             
             nib.save(
@@ -912,10 +986,6 @@ def process_results(models, folder_GT, folder_pGT):
                     plots["pGT_{}_{}".format(measure,label)] += list(df["p{}_{}".format(measure,label)])
     print(count_nan)
     return plots
-
-def process_results_brain(folder_GT:str, folder_PGT:str):
-    pass
-
 
   
 def display_plots(plots):
