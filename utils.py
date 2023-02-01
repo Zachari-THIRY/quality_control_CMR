@@ -308,11 +308,11 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
 
-def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] ,alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
+def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] ,data_path:str, alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
     # TODO : Remove hardcoded folders
     """
     Produces a .npy for each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
-    preprocess_brain() also updates the patient_info[id]["processed_shapes"] the reflect the new shape from the preprocess.
+    preprocess_brain() also updates the patient_info[id]["processed_shape"] the reflect the new shape from the preprocess.
 
     Parameters:
     -----------
@@ -355,7 +355,7 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
             for i in range(np.shape(sample)[2]):
                 sample[:,:,i] = alter_image(sample[:,:,i])
 
-            folder_out_patient = os.path.join('data/liver','measures/structured_model', f'patient{id:03d}')
+            folder_out_patient = os.path.join(data_path,'measures/structured_model', f'patient{id:03d}')
             if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
 
             nib.save(
@@ -721,7 +721,7 @@ def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, te
     # Gathering info about the patients and dataset
     patient_info = np.load(os.path.join(data_path,'preprocessed/patient_info.npy'), allow_pickle=True).item()
     spacing = median_spacing_target(os.path.join(data_path, "preprocessed"), 2)
-    optimal_parameters = np.load(os.path.join("data/liver/preprocessed", "optimal_parameters.npy"), allow_pickle=True).item()
+    optimal_parameters = np.load(os.path.join(data_path, "preprocessed", "optimal_parameters.npy"), allow_pickle=True).item()
     BATCH_SIZE = optimal_parameters["BATCH_SIZE"]
     test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
 
@@ -731,6 +731,7 @@ def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, te
         os.path.join(data_path,"structured/"), os.path.join(data_path,"measures/preprocessed_model/"),
         lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id)),
         lambda : "mask.nii.gz",
+        data_path=data_path,
         verbose=False,
         alter_image=alter_image
         )
@@ -748,10 +749,8 @@ def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, te
         current_spacing=spacing,
         compute_results=False)
 
-def compute_results(data_path, test_ids = 'default'):
+def compute_results(data_path, test_ids = 'default', measures = 'hd'):
     # TODO : assert that required functions have been executed prior
-    # TODO : Add HD option, parametrized
-    # TODO : Put it as a dictionary
     # TODO : use evaluate_metrics within compute_results
     """
     Computes plottable and relevant results to evaluate the AE's performance on model data.
@@ -759,9 +758,10 @@ def compute_results(data_path, test_ids = 'default'):
 
     Parameters
     ----------
-        data_path:str
+        data_path: str
             A string of the absolute or relative path to the specific root data folder eg. data/{application}
-    
+        test_ids: list or 'default'
+            The list of the Ids to process, usually the testing set. Option 'default' will use the saved test_ids
     Additional details
     ------------------
     GT_to_model_GT contains metric evaluations for the real GT and the model generated GT
@@ -770,25 +770,51 @@ def compute_results(data_path, test_ids = 'default'):
     The idea is that, if a model performs well, GT and model_GT will be close --> Low distance between GT and model_pGT.
     If on the contratry a model performs badly, GT and model_GT will be different --> High distance between GT and model_pGT
     """
-    test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
+    assert measures in ['hd', 'dc', 'both'],"Parameter measures must be 'hd', 'dc' or 'both'"
+    
 
-    GT_to_model_GT = []
-    GT_to_model_pGT = []
+    test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
+    
+    # Initialising results dictionary
+
+    results = {}
+    key_GT_to_model_GT, key_GT_to_model_pGT = 'GT_to_model_GT', 'GT_to_model_pGT'
+    results[key_GT_to_model_GT], results[key_GT_to_model_pGT] = {}, {}
+
+    # Finding out the measures used
+    dc, hd = False, False
+    
+    if measures == 'hd' or measures == 'both' : 
+        hd = True
+        for key in list(results.keys()) :
+            results[key]['hd'] = {}
+    if measures == 'dc' or measures == 'both' : 
+        dc = True
+        for key in list(results.keys()):
+            results[key]['dc'] = {}
+
 
     for id in test_ids:
         # Retrieving the paths of all the images to compute results from
         path_model_GT = os.path.join(data_path, 'measures/structured_model/patient{:03d}/mask.nii.gz').format(id)
         path_GT = os.path.join(data_path, 'structured/patient{:03d}/mask.nii.gz').format(id)
         path_model_pGT = os.path.join(data_path, 'measures/pGT/patient{:03d}/mask.nii.gz').format(id)
-        # Retrievinf the images
+        # Retrieving the images
         model_GT = nib.load(path_model_GT).get_fdata()
         GT = nib.load(path_GT).get_fdata()
         model_pGT = nib.load(path_model_pGT).get_fdata()
         # Appending the results
-        GT_to_model_GT.append(binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_GT)!=0, 1, 0)))
-        GT_to_model_pGT.append(binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_pGT)!=0, 1, 0)))
-
-    return GT_to_model_GT, GT_to_model_pGT
+        if dc :
+            GT_to_model_GT = (binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_GT)!=0, 1, 0)))
+            GT_to_model_pGT = (binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_pGT)!=0, 1, 0)))
+            results[key_GT_to_model_GT]['dc'][id] = GT_to_model_GT
+            results[key_GT_to_model_pGT]['dc'][id] = GT_to_model_pGT
+        if hd : 
+            GT_to_model_GT = (binary.hd(np.where(GT!=0, 1, 0), np.where(np.rint(model_GT)!=0, 1, 0)))
+            GT_to_model_pGT = (binary.hd(np.where(GT!=0, 1, 0), np.where(np.rint(model_pGT)!=0, 1, 0)))
+            results[key_GT_to_model_GT]['hd'][id] = GT_to_model_GT
+            results[key_GT_to_model_pGT]['hd'][id] = GT_to_model_pGT
+    return results
 
 
 
