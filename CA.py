@@ -281,6 +281,29 @@ class AE(nn.Module):
           row += "{:.6}\t".format("{:.4f}".format(v))
         print(header)
         print(row)
+
+    def load_checkpoint(self, data_path, checkpoint_path:str='default', eval:bool=False ):
+        """
+        Loads the model checkpoint, by default the last best saved.
+
+        Parameters
+        ----------
+            checkpoint_path:str (default = 'default')
+                If 'default' is set, then last best saved checkpoint will be loaded. Otherwise, provide path to custom checkpoint.
+            eval:bool (default = False)
+                If set to True, ae.eval() will also be called. Leave to False for training.
+        """
+        if checkpoint_path=='default':
+            ckpt = os.path.join(data_path,"checkpoints/", sorted([file for file in os.listdir(os.path.join(data_path,"checkpoints")) if "_best" in file])[-1])
+        else:
+            ckpt = checkpoint_path
+        print("Chosen checkpoint is {} .".format(os.path.split(ckpt)[1]))
+        print("###################################")
+        ckpt = torch.load(ckpt)
+
+        self.load_state_dict(ckpt["AE"])
+        self.optimizer.load_state_dict(ckpt["AE_optim"])
+        if eval: self.eval()
     
 def plot_history(history):
     losses = [x['Total'] for x in history]
@@ -324,7 +347,7 @@ def satisfies_rules(rules, set_parameters):
     return True
 
 
-
+# TOCHANGE: is harcoded for heart key values
 def hyperparameter_tuning(parameters, train_loader, val_loader, transform, transform_augmentation, rules=[], fast=False):
     best_dc = 0
     optimal_parameters = None
@@ -367,10 +390,26 @@ def hyperparameter_tuning(parameters, train_loader, val_loader, transform, trans
 #Checkpointing#
 ###############
 
-#TODO Refactor this function that looks ugly
 
-def clean_old_checkpoints(ckpt_folder, best_keep=2, total_keep=10):
+
+#TODO Rewrite this function in a cleaner manner
+def clean_old_checkpoints(ckpt_folder:str, best_keep:int=2, total_keep:int=10):
+    """
+        Is called after each training routine: will keep the {best_keep} best checkpoints, and the other most recent checkpoints for a total of {total_keep checkpoints}. 
+        Others will be deleted.
+        Example: keep 070_best, 077_best, and 0_78, 0_78, ... and some others
+
+        Parameters
+        ----------
+            ckpt_folder: str
+                The string path to the checkpoints folder
+            best_keep: int (default = 2)
+                The number of last best checkoints to keep
+            total_keep: int (default = 10)
+                The total number of checkoints to keep, best and not best included
+    """
     assert(best_keep <= total_keep)
+    assert(os.path.isdir(ckpt_folder))
     poor_keep = total_keep - best_keep
     poor_ckpts = sorted([file for file in os.listdir(ckpt_folder) if "_best" not in file])
     best_ckpts = sorted([file for file in os.listdir(ckpt_folder) if "_best" in file])
