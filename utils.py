@@ -73,7 +73,7 @@ def gunzip_and_replace(filePath:str):
         f_in.close()
     os.remove(filePath)
 
-def structure_dataset(segmentation_paths:list, destination_folder:str, fileName: str="mask.nii.gz", delete: list=None) -> None:
+def structure_dataset(segmentation_paths:list, data_path:str, destination_folder:str = 'structured', fileName: str="mask.nii.gz", delete: list=None) -> None:
 
     """
     This method uniformizes the dataset so that all other functions work on the same directory architecture.
@@ -83,6 +83,8 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
     ----------
         segmentation_paths: list
             A list of all the paths of the segmentations to be restructured, length must be <= 1000
+        data_path: str
+            The specific data directory (eg. data/brain)
         destination_folder: str
             The new root_folder of the dataset. Both relative and absolute paths are accepted
         fileName: str
@@ -96,15 +98,13 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
         The limit can be removed if the patient folder names are adjusted throughout the code.
 
     """
-    ####
-    # Doing some type and length checks on the segmentation paths : 
     for path in segmentation_paths :
         assert path.endswith("nii.gz") or path.endswith('.nii'), f"segmentation must be of type .nii or .nii.gz but {path} was given"
 
     assert fileName.endswith(".nii.gz"), "fileName must end with .nii.gz"
     assert(len(segmentation_paths) <=1000 ), "Dataset is too large. Make sure N <= 1000"
 
-    ####
+    destination_folder = os.path.join(data_path, destination_folder)
 
     os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
     
@@ -128,29 +128,6 @@ def structure_dataset(segmentation_paths:list, destination_folder:str, fileName:
                 shutil.rmtree(path, ignore_errors=False)
             except:
                 print("Could not delete specified folder {}".format(path))
-
-#TODO : deprecate structure_dataset_name
-
-def structure_dataset_names(REL_DATA_LOCATION, newLocation = "structured"):
-    """
-    Deprecated, use structure_dataset instead
-    """
-    # TODO: Also remove files which don't have the right masks or images ; and make sure README is moved
-    DATA_LOCATION = os.path.join(os.getcwd(), REL_DATA_LOCATION)                    # Absolute path to location
-    NEW_DATA_LOCATION = os.path.join(os.path.dirname(DATA_LOCATION), newLocation)   # Path of new transformed data
-    os.rename(os.path.join(DATA_LOCATION, "README"), os.path.join(os.path.dirname(DATA_LOCATION), "README"))
-    patients = sorted(os.listdir(DATA_LOCATION))
-    assert(len(patients) <=1000 ), "Dataset is too large. Make sure N <= 1000"
-
-    if not os.path.isdir(NEW_DATA_LOCATION):
-        os.mkdir(NEW_DATA_LOCATION)
-
-    for id, patient in enumerate(patients):
-        current_name = os.path.join(DATA_LOCATION, patient)
-        new_name = os.path.join(NEW_DATA_LOCATION, "patient{:03d}".format(id))
-        os.rename(current_name, new_name)
-
-    os.rmdir(DATA_LOCATION)
 
 
 def crop_image(image):
@@ -197,13 +174,15 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["affine"] = image.affine
     return patient_info
 
-def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", skip:list = [], verbose: bool = False, verbose_rate: int = 10):
+def generate_patient_info_brain(data_path:str, dataset_folder:str='structured', fileName: str="mask.nii.gz", skip:list = [], verbose: bool = False, verbose_rate: int = 10):
     """
     Generates patient info from the structructured dataset in folder, based on the fileName files.\n
 
     Parameters
     ----------
-        folder: str
+        data_path: str
+            The specific data directory (eg. data/brain)
+        dataset_folder: str
             The root folder containing the structured dataset.
         fileName: str
             The generic filename of each mask ; it should be the same for every patient.
@@ -225,14 +204,19 @@ def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", skip:l
 
     assert verbose_rate > 0, f"The verbose rate should be positivie, but verbose_rate = {verbose_rate} was passed."
 
-    patients_list  =sorted(os.listdir(folder))
+    dataset_folder = os.path.join(data_path, dataset_folder)
+
+    patients_list = sorted(os.listdir(dataset_folder))
+    print(len(patients_list))
     if patients_list[-1] == "patient_info.npy" : patients_list.pop(-1)
+    if patients_list[0] == "optimal_parameters.npy" : patients_list.pop(0)
+
     patient_ids = [i for i in range(len(patients_list))]
     for id in skip:
         patient_ids.remove(id) # removing absent images or masks
     patient_info = {}
     for id in patient_ids:
-        patient_folder = os.path.join(folder, 'patient{:03d}'.format(id))
+        patient_folder = os.path.join(dataset_folder, 'patient{:03d}'.format(id))
         image = nib.load(os.path.join(patient_folder, fileName))
         patient_info[id] = {} # Initialising the dict for specified id
         patient_info[id]["shape"] = image.get_fdata().shape
@@ -243,7 +227,58 @@ def generate_patient_info_brain(folder: str, fileName: str="mask.nii.gz", skip:l
         patient_info[id]["affine"] = image.affine
         if(id%verbose_rate == 0 and verbose) : 
             print("Just processed patient {PATIENT_ID:03d} out of {TOTAL:03d}".format(PATIENT_ID = id, TOTAL=len(patient_ids)))
+
+    patient_info_folder = os.path.join(data_path, 'preprocessed')
+    if not os.path.exists(patient_info_folder):
+        os.makedirs(patient_info_folder)  
+        np.save(os.path.join(patient_info_folder, "patient_info"), patient_info)
+
     return patient_info
+
+def train_val_test(data_path:str, ids_range:range='default', split=[0.70, 0.15, 0.15], shuffle = True, Force=False):
+    """
+    Given the specified range, returns three shuffled (by default) arrays given the sppecified split.
+
+    Parameters
+    ----------
+        data_path: str
+            The specific data path (eg. data/brain)
+        ids_range: range
+            The range of ids to split
+        split: list (length 3)
+            The list of split values : [train, test, val]. Sum must be equal to one.
+        shuffle: bool, default=True
+            If set to True, will shuffle the Ids
+        Force: bool, default=False
+            If set to True, this function wil overwrite any previously existing saved ids.
+    """
+
+    assert sum(split) == 1 , f"Given split doesn't sum to 1 (input was {split})"
+    assert len(split) == 3 , f"Given split doesn't have the right length : {len(split)} was given instead of 3"
+    assert all([0<=split[i]<=1 for i in range(len(split))]), f"Split values must all be between 0 and 1."
+
+    patient_info = np.load(os.path.join(data_path, 'preprocessed/patient_info.npy'), allow_pickle=True).item()
+    ids_range = range(len(patient_info)) if ids_range == 'default' else ids_range
+
+    ids = [i for i in ids_range]
+    np.random.shuffle(ids)
+
+    train_limit, val_limit = np.array([np.floor(split[i]*len(ids_range)) for i in [0,1]], dtype=int)
+    val_limit += train_limit
+
+    train_ids = ids[:train_limit]
+    val_ids = ids[train_limit:val_limit]
+    test_ids = ids[val_limit:]
+
+    saved_ids = {'train_ids': train_ids, 'val_ids': val_ids, 'test_ids': test_ids}
+    saved_ids_path = os.path.join(data_path, 'saved_ids.npy')
+
+    if not os.path.exists(saved_ids_path) or Force == True: 
+        np.save(saved_ids_path, saved_ids)
+    else:
+        raise FileExistsError("Ids already exist, to overwrite, use parameter 'Force=True'")
+
+    return train_ids, val_ids, test_ids
 
 def median_spacing_target(folder: str, round=2) -> list:
     """
@@ -308,7 +343,7 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
 
-def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: list, folder: str, folder_out: str, get_patient_folder: Callable[[], str] , get_fname: Callable[[], str] ,data_path:str, alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
+def preprocess_brain(data_path:str, patient_ids: range='default' , patient_info:dict='default', spacing_target:list='default', alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
     # TODO : Remove hardcoded folders
     """
     Produces a .npy for each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
@@ -317,17 +352,11 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
     Parameters:
     -----------
         patient_ids: range / list
-            The ids of the patients to be preprocessed
+            The ids of the patients to be preprocessed, 'default' option will retrieve information from patient_info.npy
         patient_info: dict
             The generated patient info from generate_patient_info()
         spacing_target: 
             The target spacing, usually given by spacing_target()
-        folder: str
-            The initial location of the patients
-        folder_out: str
-            The output location 
-        get_patient_folder: Callable[[], str]
-            A function returning the custom name of the patients folder
         get_fname: Callable[[], str]
             A function returning the custom name of the patients masks
         alter_image: Callable, optional
@@ -338,11 +367,20 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
             When True, will display progress every 10 patients preprocessed
 
     """
+    folder_in = os.path.join(data_path, 'structured')
+    folder_out = os.path.join(data_path, 'preprocessed')
+    get_patient_folder = lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id))
+    get_fname = lambda : "mask.nii.gz"
+    patient_info = np.load(os.path.join(data_path, 'preprocessed/patient_info.npy'), allow_pickle=True).item() if patient_info == 'default' else patient_info
+    
+    spacing_target = median_spacing_target(os.path.join(data_path, 'preprocessed')) if spacing_target=='default' else spacing_target
+
     if not os.path.exists(folder_out) : os.makedirs(folder_out)
 
-    patient_ids = [i for i in patient_ids if i not in skip]
+    patient_ids = [i for i in list(patient_info.keys()) if i not in skip] if patient_ids =='default' else patient_ids
+
     for id in patient_ids:
-        patient_folder = get_patient_folder(folder, id)
+        patient_folder = get_patient_folder(folder_in, id)
         images = []
         fname = get_fname()
         fname = os.path.join(patient_folder, fname)
@@ -350,6 +388,7 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
             continue
         
         sample = nib.load(fname).get_fdata().astype(int)
+        if len(np.shape(sample)) == 4: sample = sample[:,:,:,0] # Removing the time dimension
         # Apply optional alteration (eg. a model ; used to test the AE) and saves it
         if alter_image is not None:
             for i in range(np.shape(sample)[2]):
@@ -362,6 +401,7 @@ def preprocess_brain(patient_ids: range, patient_info: dict, spacing_target: lis
                     nib.Nifti1Image(sample, patient_info[id]["affine"], patient_info[id]["header"]),
                     os.path.join(folder_out_patient,'mask.nii.gz')
                 )
+        ### End of Alteration
 
         image, processed_shape = preprocess_image(
             sample,
@@ -565,18 +605,29 @@ class SYNDalaLoader() :
 
 
     """
-    def __init__(self, root_dir, patient_ids, batch_size=None, transform=None):
-        self.root_dir = root_dir
-        self.patient_ids = patient_ids
+    def __init__(self, data_path:str, mode:str, root_dir:str='default', patient_ids=None, batch_size=None, transform=None):
+
+        assert mode in ['train', 'val', 'test', 'default'], "Make sure mode is either 'train', 'val', 'test' or 'custom"
+        if mode == 'custom': assert patient_ids is not None, 'patient_ids must be specified on custom mode'
+        if patient_ids is not None and mode in ['train', 'val', 'test'] : print(f"Specified patient_ids will be ignored since default mode '{mode}' is specified")
+
+        self.data_path = data_path
+        self.root_dir = os.path.join(data_path, 'preprocessed') if root_dir == 'default' else root_dir
         self.batch_size = batch_size
         self.transform = transform
         self.patient_loaders = []
+        if mode in ['train', 'val', 'test']:
+            self.patient_ids = np.load(os.path.join(data_path,'saved_ids.npy'), allow_pickle=True).item().get(f'{mode}_ids')
+        else:
+            self.patient_ids = patient_ids
+
         if batch_size is not None:
             for id in self.patient_ids:
                 self.patient_loaders.append(torch.utils.data.DataLoader(
-                    SYNPatient(root_dir, id, transform=transform),
-                    batch_size=batch_size, shuffle=False, num_workers=0
+                    SYNPatient(self.root_dir, id, transform=self.transform),
+                    batch_size=self.batch_size, shuffle=False, num_workers=0
                 ))
+        
         self.counter_id = 0
 
     def set_batch_size(self, batch_size):
@@ -727,17 +778,13 @@ def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, te
 
     # Creates nii.gz for the model_GT, and preprocesses that model_GT for the AE to run
     preprocess_brain(
-        test_ids, patient_info, spacing,
-        os.path.join(data_path,"structured/"), os.path.join(data_path,"measures/preprocessed_model/"),
-        lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id)),
-        lambda : "mask.nii.gz",
         data_path=data_path,
         verbose=False,
         alter_image=alter_image
         )
     
 
-    test_loader = SYNDalaLoader(os.path.join(data_path, "measures/preprocessed_model"), test_ids, batch_size=BATCH_SIZE, transform=transform)
+    test_loader = SYNDalaLoader(data_path, mode='test', batch_size=BATCH_SIZE, transform=transform)
     
     # Evaluates the model data with the trained AE
     _ = testing_brain(
@@ -803,6 +850,10 @@ def compute_results(data_path, test_ids = 'default', measures = 'hd'):
         model_GT = nib.load(path_model_GT).get_fdata()
         GT = nib.load(path_GT).get_fdata()
         model_pGT = nib.load(path_model_pGT).get_fdata()
+        # Removing the time dimension
+        if len(GT.shape) == 4: GT = GT[:, :, :, 0]
+        if len(model_GT.shape) == 4: model_GT = model_GT[:, :, :, 0]
+        if len(model_pGT.shape) == 4: model_pGT = model_pGT[:, :, :, 0]
         # Appending the results
         if dc :
             GT_to_model_GT = (binary.dc(np.where(GT!=0, 1, 0), np.where(np.rint(model_GT)!=0, 1, 0)))
@@ -814,6 +865,7 @@ def compute_results(data_path, test_ids = 'default', measures = 'hd'):
             GT_to_model_pGT = (binary.hd(np.where(GT!=0, 1, 0), np.where(np.rint(model_pGT)!=0, 1, 0)))
             results[key_GT_to_model_GT]['hd'][id] = GT_to_model_GT
             results[key_GT_to_model_pGT]['hd'][id] = GT_to_model_pGT
+    np.save(os.path.join(data_path), 'results.npy', results)
     return results
 
 
@@ -985,6 +1037,39 @@ class Count_nan():
         string += "False Positive by CA: {}\n".format(self.FP_CA)
         string += "Total discarded from the next plots: {}".format(self.total)
         return string
+
+def process_results_single(results:dict):
+    keys = list(results.keys())
+    plots = {}
+    for key in keys: # GT_to_model_GT or GT_to_model_pGT
+        plots[key] = {}
+        for measure_key in (list(results[key].keys())) : # hd or dc
+            plots[key][measure_key] = list(results[key][measure_key].values())
+                
+
+    return plots
+
+def plot_results(results):
+    # TODO : Implement multiple keys support
+
+    plots = process_results_single(results)
+    measures = list(plots[list(plots.keys())[0]].keys())
+
+    fig, axs = plt.subplots(len(measures),1)
+    single = True if len(measures) == 1 else False
+    for i,measure in enumerate(measures):
+        x = plots['GT_to_model_GT'][measure]
+        y = plots['GT_to_model_pGT'][measure]
+        current_axe = axs[i] if not single else axs
+        
+        current_axe.scatter(x,y)
+        current_axe.set_title(f'Results for {measure} :', loc='center')
+        current_axe.grid()
+        # if measure == 'dc':
+        #     current_axe.set_xlim(left=0, right=1)
+        #     current_axe.set_ylim(bottom=0, top=1)
+    fig.suptitle("Plotted measures")
+    fig.tight_layout()
    
 def process_results(models, folder_GT, folder_pGT):
     count_nan = Count_nan()
