@@ -65,10 +65,11 @@ def copy_and_translate(image, hardness:float = 0.5):
     """
 
     assert hardness>0 and hardness <1, "hardness must be strictly between 0 and 1"
-    
+
     new_image = np.copy(image)
+
     # Retrieving information about the image size and the portion size
-    image_width, image_height = np.shape(image)
+    image_width, image_height = np.shape(new_image)
     portion_size = int(hardness*min(image_width, image_height))
     # Selecting a portion to copy
     x1 = random.randint(0, image_width-portion_size)
@@ -90,6 +91,9 @@ def alter_image(image, parameters = None):
     # Ensure the input is a valid numpy array
     if not isinstance(image, np.ndarray):
         raise TypeError("Input image must be a numpy array")
+
+    if len(np.shape(image)) == 3 : image = image[:,:,0] # Removing the useless time dimension
+
     # Setting default parameters
     parameters = {
         'param_copy': np.random.random()*0.7,
