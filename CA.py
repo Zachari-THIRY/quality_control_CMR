@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import warnings
 
 from medpy.metric import binary
 
@@ -11,17 +12,24 @@ from medpy.metric import binary
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AE(nn.Module):
-    def __init__(self, **kwargs):
+    def __init__(self, keys, **kwargs):
+        assert all([type(cls) == str for cls in keys]), 'keys parameter must be an array of Strings'
+        assert len(keys) >= 2, 'At least two keys are necessary.'
+        
+        if not all([len(cls)<=3 for cls in keys]): warnings.warn("Using key labels with length >3 will lead to display incoherences")
+
         super().__init__()
         self.init_layers(kwargs["latent_size"])
         self.apply(self.weight_init)
+        self.keys = keys
         self.loss_function = self.Loss(kwargs["functions"], kwargs["settling_epochs_BKGDLoss"], kwargs["settling_epochs_BKMSELoss"])
-        self.metrics = self.Metrics()
+        self.metrics = self.Metrics(self.keys)
         self.optimizer = kwargs["optimizer"](
             self.parameters(),
             lr=kwargs["lr"],
             **{k:v for k,v in kwargs.items() if k in ["weight_decay", "momentum"]}
         )
+        
 
     def init_layers(self, latent_size):
         self.encoder = nn.Sequential(
@@ -184,9 +192,10 @@ class AE(nn.Module):
                 return contributes["Total"]
 
     class Metrics():
-        def __init__(self):
+        def __init__(self, keys):
             self.DC = self.DC()
             self.HD = self.HD()
+            self.keys = keys
 
         class DC:
             def __call__(self, prediction, target):
@@ -204,7 +213,7 @@ class AE(nn.Module):
 
         def __call__(self, prediction, target, validation=False):
             metrics = {}
-            for c,key in enumerate(["BK_", "RV_", "MYO_", "LV_"]):
+            for c,key in enumerate([cls+'_' for cls in self.keys]):
                 ref = np.copy(target)
                 pred = np.copy(prediction)
 
