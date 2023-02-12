@@ -74,7 +74,6 @@ def gunzip_and_replace(filePath:str):
     os.remove(filePath)
 
 def structure_dataset(segmentation_paths:list, data_path:str, destination_folder:str = 'structured', fileName: str="mask.nii.gz", delete: list=None) -> None:
-
     """
     This method uniformizes the dataset so that all other functions work on the same directory architecture.
     All segmentations pointed by segmentation_paths will be moved to destination_folder/patientXXX/fileName
@@ -291,8 +290,6 @@ def median_spacing_target(folder: str, round=2) -> list:
         round: int
             The number of decimals of the rounding
     """
-
-
     path = os.path.join(folder, "patient_info.npy")
     patient_info = np.load(path, allow_pickle=True).item()
     spacing_target = np.median(np.array([patient_info[key]["spacing"] for key in patient_info.keys()]), axis=0)
@@ -607,7 +604,7 @@ class SYNDalaLoader() :
     """
     def __init__(self, data_path:str, mode:str, root_dir:str='default', patient_ids=None, batch_size=None, transform=None):
 
-        assert mode in ['train', 'val', 'test', 'default'], "Make sure mode is either 'train', 'val', 'test' or 'custom"
+        assert mode in ['train', 'val', 'test', 'custom'], "Make sure mode is either 'train', 'val', 'test' or 'custom"
         if mode == 'custom': assert patient_ids is not None, 'patient_ids must be specified on custom mode'
         if patient_ids is not None and mode in ['train', 'val', 'test'] : print(f"Specified patient_ids will be ignored since default mode '{mode}' is specified")
 
