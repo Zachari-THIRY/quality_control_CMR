@@ -173,67 +173,6 @@ def generate_patient_info(folder, patient_ids):
         patient_info[id]["affine"] = image.affine
     return patient_info
 
-def generate_patient_info_brain(data_path:str, dataset_folder:str='structured', fileName: str="mask.nii.gz", skip:list = [], verbose: bool = False, verbose_rate: int = 10):
-    """
-    Generates patient info from the structructured dataset in folder, based on the fileName files.\n
-
-    Parameters
-    ----------
-        data_path: str
-            The specific data directory (eg. data/brain)
-        dataset_folder: str
-            The root folder containing the structured dataset.
-        fileName: str
-            The generic filename of each mask ; it should be the same for every patient.
-        skip: list
-            The integer list of the ids to skip.
-        verbose: bool
-            Enables the progress display every verbose_rate units processed.
-        verbose_rate: int
-            The step with which progress is displayed ; by default every 10 units.
-    
-    Gathered information :
-    ----------------------
-        Shape of the original image: "shape",
-        The resizer used for cropping: "crop",
-        The original spacing: "spacing",
-        The original image header: "header",
-        The image affine: "affine".
-    """
-
-    assert verbose_rate > 0, f"The verbose rate should be positivie, but verbose_rate = {verbose_rate} was passed."
-
-    dataset_folder = os.path.join(data_path, dataset_folder)
-
-    patients_list = sorted(os.listdir(dataset_folder))
-    print(len(patients_list))
-    if patients_list[-1] == "patient_info.npy" : patients_list.pop(-1)
-    if patients_list[0] == "optimal_parameters.npy" : patients_list.pop(0)
-
-    patient_ids = [i for i in range(len(patients_list))]
-    for id in skip:
-        patient_ids.remove(id) # removing absent images or masks
-    patient_info = {}
-    for id in patient_ids:
-        patient_folder = os.path.join(dataset_folder, 'patient{:03d}'.format(id))
-        image = nib.load(os.path.join(patient_folder, fileName))
-        patient_info[id] = {} # Initialising the dict for specified id
-        patient_info[id]["shape"] = image.get_fdata().shape
-        patient_info[id]["crop"] = crop_image(image.get_fdata())
-
-        patient_info[id]["spacing"] = image.header["pixdim"][[3,2,1]]
-        patient_info[id]["header"] = image.header
-        patient_info[id]["affine"] = image.affine
-        if(id%verbose_rate == 0 and verbose) : 
-            print("Just processed patient {PATIENT_ID:03d} out of {TOTAL:03d}".format(PATIENT_ID = id, TOTAL=len(patient_ids)))
-
-    patient_info_folder = os.path.join(data_path, 'preprocessed')
-    if not os.path.exists(patient_info_folder):
-        os.makedirs(patient_info_folder)  
-        np.save(os.path.join(patient_info_folder, "patient_info"), patient_info)
-
-    return patient_info
-
 def train_val_test(data_path:str, ids_range:range='default', split=[0.70, 0.15, 0.15], shuffle = True, Force=False):
     """
     Given the specified range, returns three shuffled (by default) arrays given the sppecified split.
@@ -339,84 +278,6 @@ def preprocess(patient_ids, patient_info, spacing_target, folder, folder_out, ge
             images.append(image)
         images = np.vstack(images)
         np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
-
-def preprocess_brain(data_path:str, patient_ids: range='default' , patient_info:dict='default', spacing_target:list='default', alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
-    # TODO : Remove hardcoded folders
-    """
-    Produces a .npy for each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
-    preprocess_brain() also updates the patient_info[id]["processed_shape"] the reflect the new shape from the preprocess.
-
-    Parameters:
-    -----------
-        patient_ids: range / list
-            The ids of the patients to be preprocessed, 'default' option will retrieve information from patient_info.npy
-        patient_info: dict
-            The generated patient info from generate_patient_info()
-        spacing_target: 
-            The target spacing, usually given by spacing_target()
-        get_fname: Callable[[], str]
-            A function returning the custom name of the patients masks
-        alter_image: Callable, optional
-            By default None ; will apply the specified alteration to the image before it is saved.
-        skip: list, optional
-            A list of the ids to skip , optional
-        verbose: bool, optional
-            When True, will display progress every 10 patients preprocessed
-
-    """
-    folder_in = os.path.join(data_path, 'structured')
-    folder_out = os.path.join(data_path, 'preprocessed')
-    get_patient_folder = lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id))
-    get_fname = lambda : "mask.nii.gz"
-    patient_info = np.load(os.path.join(data_path, 'preprocessed/patient_info.npy'), allow_pickle=True).item() if patient_info == 'default' else patient_info
-    
-    spacing_target = median_spacing_target(os.path.join(data_path, 'preprocessed')) if spacing_target=='default' else spacing_target
-
-    if not os.path.exists(folder_out) : os.makedirs(folder_out)
-
-    patient_ids = [i for i in list(patient_info.keys()) if i not in skip] if patient_ids =='default' else patient_ids
-
-    for id in patient_ids:
-        patient_folder = get_patient_folder(folder_in, id)
-        images = []
-        fname = get_fname()
-        fname = os.path.join(patient_folder, fname)
-        if(not os.path.isfile(fname)):
-            continue
-        
-        sample = nib.load(fname).get_fdata().astype(int)
-        if len(np.shape(sample)) == 4: sample = sample[:,:,:,0] # Removing the time dimension
-        # Apply optional alteration (eg. a model ; used to test the AE) and saves it
-        if alter_image is not None:
-            for i in range(np.shape(sample)[2]):
-                sample[:,:,i] = alter_image(sample[:,:,i])
-
-            folder_out_patient = os.path.join(data_path,'measures/structured_model', f'patient{id:03d}')
-            if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
-
-            nib.save(
-                    nib.Nifti1Image(sample, patient_info[id]["affine"], patient_info[id]["header"]),
-                    os.path.join(folder_out_patient,'mask.nii.gz')
-                )
-        ### End of Alteration
-
-        image, processed_shape = preprocess_image(
-            sample,
-            patient_info[id]["crop"],
-            patient_info[id]["spacing"],
-            spacing_target
-        )
-
-        # If depth of image changes after processing, it should be recorded
-        patient_info[id]["processed_shape"] = processed_shape
-        images.append(image)
-        images = np.vstack(images)
-        np.save(os.path.join(folder_out, "patient{:03d}".format(id)), images.astype(np.float32))
-        if(verbose and id%10 == 0) : 
-            print("Finished processing patient {:03d}".format(id))
-    np.save(os.path.join(folder_out, "patient_info"), patient_info)
-    
-
 ###########
 ##Dataset##
 ###########
@@ -591,112 +452,6 @@ class ACDCDataLoader():
 
     def current_id(self):
         return self.patient_ids[self.counter_id]
-
-
-############################
-##Brain Dataset and Loader##
-############################
-class SYNDalaLoader() :
-    """
-    Loops through the patients, layer by layer.
-
-
-    """
-    def __init__(self, data_path:str, mode:str, root_dir:str='default', patient_ids=None, batch_size=None, transform=None):
-
-        assert mode in ['train', 'val', 'test', 'custom'], "Make sure mode is either 'train', 'val', 'test' or 'custom"
-        if mode == 'custom': assert patient_ids is not None, 'patient_ids must be specified on custom mode'
-        if patient_ids is not None and mode in ['train', 'val', 'test'] : print(f"Specified patient_ids will be ignored since default mode '{mode}' is specified")
-
-        self.data_path = data_path
-        self.root_dir = os.path.join(data_path, 'preprocessed') if root_dir == 'default' else root_dir
-        self.batch_size = batch_size
-        self.transform = transform
-        self.patient_loaders = []
-        if mode in ['train', 'val', 'test']:
-            self.patient_ids = np.load(os.path.join(data_path,'saved_ids.npy'), allow_pickle=True).item().get(f'{mode}_ids')
-        else:
-            self.patient_ids = patient_ids
-
-        if batch_size is not None:
-            for id in self.patient_ids:
-                self.patient_loaders.append(torch.utils.data.DataLoader(
-                    SYNPatient(self.root_dir, id, transform=self.transform),
-                    batch_size=self.batch_size, shuffle=False, num_workers=0
-                ))
-        
-        self.counter_id = 0
-
-    def set_batch_size(self, batch_size):
-        self.patient_loaders = []
-        for id in self.patient_ids:
-            self.patient_loaders.append(torch.utils.data.DataLoader(
-                SYNPatient(self.root_dir, id, transform=self.transform),
-                batch_size=batch_size, shuffle=False, num_workers=0
-            ))
-    
-    def set_transform(self, transform):
-        self.transform = transform
-        for loader in self.patient_loaders:
-            loader.dataset.transform = transform
-
-    def __iter__(self):
-        self.counter_iter = 0
-        return self
-
-    def __next__(self):
-        if(self.counter_iter == len(self)):
-            raise StopIteration
-        loader = self.patient_loaders[self.counter_id]
-        self.counter_id += 1
-        self.counter_iter += 1
-        if self.counter_id%len(self) == 0:
-            self.counter_id = 0
-        return loader
-
-    def __len__(self):
-        return len(self.patient_ids)
-
-    def current_id(self):
-        return self.patient_ids[self.counter_id]
-
-class SYNPatient(torch.utils.data.Dataset):
-    """
-    The Dataset class representing one patient.
-
-    Attributes
-    ----------
-        id: int
-            The id of the patient. It is a unique identifier
-        info: dict
-            The corresponding item from patient_info. See generate_patient_info for details
-        transform: torchvision.transforms.transforms.Compose
-            The transforms applied to the patient data
-
-    Methods
-    -------
-        __len__
-            Returns the number of layers if the data matrix
-        __getitem__
-            Takes the specified layer (by the slice_id parameter), applies transformation and returns it
-        
-    """
-
-    def __init__(self, root_dir, patient_id, transform=None):
-        self.root_dir = root_dir
-        self.id = patient_id
-        self.info = np.load(os.path.join(root_dir,"patient_info.npy"), allow_pickle=True).item()[patient_id]
-        self.transform = transform
-
-    def __len__(self):
-        return self.info["processed_shape"][0]
-
-    def __getitem__(self, slice_id):
-        data = np.load(os.path.join(self.root_dir, "patient{:03d}.npy".format(self.id)))
-        sample = data[slice_id]
-        if self.transform:
-            sample = self.transform(sample)
-        return sample
     
 ###########
 ##Testing##
@@ -733,65 +488,6 @@ def evaluate_metrics(prediction, reference, keys: list = None):
             except:
                 results["HD" + key] = np.nan
     return results
-        
-
-# def evaluate_metrics(prediction, reference):
-#     results = {}
-#     for c,key in enumerate(["_RV", "_MYO", "_LV"],start=1):
-#         ref = np.copy(reference)
-#         pred = np.copy(prediction)
-
-#         ref = ref if c==0 else np.where(ref!=c, 0, ref)
-#         pred = pred if c==0 else np.where(np.rint(pred)!=c, 0, pred)
-
-#         try:
-#             results["DSC" + key] = binary.dc(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
-#         except:
-#             results["DSC" + key] = 0
-#         try:
-#             results["HD" + key] = binary.hd(np.where(ref!=0, 1, 0), np.where(np.rint(pred)!=0, 1, 0))
-#         except:
-#             results["HD" + key] = np.nan
-#     return results
-
-def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, test_ids:list='default' ):
-    """
-        Given a model 'alter_image', will generate model_GT, and run the AE on it to output a model_pGT"
-    """
-
-
-    # Creating the required paths
-    required_paths = ["measures", "measures/preprocessed_model"]
-    for path in required_paths:
-        full_path = os.path.join(data_path, path)
-        if not os.path.exists(full_path): os.makedirs(full_path)
-    
-    # Gathering info about the patients and dataset
-    patient_info = np.load(os.path.join(data_path,'preprocessed/patient_info.npy'), allow_pickle=True).item()
-    spacing = median_spacing_target(os.path.join(data_path, "preprocessed"), 2)
-    optimal_parameters = np.load(os.path.join(data_path, "preprocessed", "optimal_parameters.npy"), allow_pickle=True).item()
-    BATCH_SIZE = optimal_parameters["BATCH_SIZE"]
-    test_ids = np.load(os.path.join(data_path, 'saved_ids.npy'), allow_pickle=True).item().get('test_ids') if test_ids == 'default' else test_ids
-
-    # Creates nii.gz for the model_GT, and preprocesses that model_GT for the AE to run
-    preprocess_brain(
-        data_path=data_path,
-        verbose=False,
-        alter_image=alter_image
-        )
-    
-
-    test_loader = SYNDalaLoader(data_path, mode='test', batch_size=BATCH_SIZE, transform=transform)
-    
-    # Evaluates the model data with the trained AE
-    _ = testing_brain(
-        ae=ae,
-        test_loader=test_loader,
-        patient_info=patient_info,
-        folder_predictions=os.path.join(data_path, "measures/preprocessed_model"),
-        folder_out=os.path.join(data_path, "measures/pGT"),
-        current_spacing=spacing,
-        compute_results=False)
 
 def compute_results(data_path, test_ids = 'default', measures = 'hd'):
     # TODO : assert that required functions have been executed prior
@@ -898,38 +594,6 @@ def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:li
     postprocessed[crop] = image
     return postprocessed
 
-#TODO : Generalise postprocessing
-def postprocess_image_brain(image, info, current_spacing):
-    """
-    Takes the input image along with some information, and applies reverse transformation from the preprocessing step.
-
-    Parameters
-    ----------
-        image: np.array
-            The generated output from the auto encoder
-        info: dict
-            The corresponding patient_info to that image
-        current_spacing: list
-            The current image spacing, which corresponds to the median_spacing_target() of the training.
-    """
-
-    shape = info["shape"]
-    shape = shape if len(info["shape"]) == 3 else shape[:3]
-
-    postprocessed = np.zeros(shape)
-    crop = info["crop"][:3]
-    original_shape = postprocessed[crop].shape
-    original_spacing = info["spacing"]
-    tmp_shape = tuple(np.round(original_spacing[1:] / current_spacing[1:] * original_shape[:2]).astype(int)[::-1])
-    image = np.argmax(image, axis=1)
-    image = np.array([torchvision.transforms.Compose([
-            AddPadding(tmp_shape), CenterCrop(tmp_shape), OneHot()
-        ])(slice) for slice in image]
-    )
-    image = resize_segmentation(image.transpose(1,3,2,0), image.shape[1:2]+original_shape,order=1)
-    image = np.argmax(image, axis=0)
-    postprocessed[crop] = image
-    return postprocessed
   
 def testing(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
     ae.eval()
@@ -963,41 +627,6 @@ def testing(ae, test_loader, patient_info, folder_predictions, folder_out, curre
                     nib.Nifti1Image(reconstruction[phase], patient_info[id]["affine"], patient_info[id]["header"]),
                     os.path.join(folder_out, 'patient{:03d}_{}.nii.gz'.format(id, phase))
                 )
-    return results
-
-#TODO: Generalize testing
-#TODO: Add option to save results dict
-
-def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing, compute_results = True):
-    # Option compute_results was added so that if needed, results don't have to be computed
-    ae.eval()
-    with torch.no_grad():
-        results = {}
-        for patient in test_loader:
-            id = patient.dataset.id
-            prediction, reconstruction = [], []
-            for batch in patient: 
-                batch = {"prediction": batch.to(device)}
-                batch["reconstruction"] = ae.forward(batch["prediction"])
-                prediction = torch.cat([prediction, batch["prediction"]], dim=0) if len(prediction)>0 else batch["prediction"]
-                reconstruction = torch.cat([reconstruction, batch["reconstruction"]], dim=0) if len(reconstruction)>0 else batch["reconstruction"]
-            prediction = prediction.cpu().numpy(),
-            reconstruction = reconstruction.cpu().numpy()
-
-            reconstruction = postprocess_image_brain(reconstruction, patient_info[id], current_spacing)
-            folder_out_patient = os.path.join(folder_out, "patient{:03d}".format(id))
-            if compute_results :
-                results["patient{:03d}".format(id)] = evaluate_metrics(
-                    nib.load(os.path.join(folder_predictions, f"patient{id:03d}", "mask.nii.gz")).get_fdata(),
-                    reconstruction,
-                    keys = None
-                )
-            if not os.path.exists(folder_out_patient) : os.makedirs(folder_out_patient)
-            
-            nib.save(
-                nib.Nifti1Image(reconstruction, patient_info[id]["affine"], patient_info[id]["header"]),
-                os.path.join(folder_out_patient,'mask.nii.gz')
-            )
     return results
   
 def display_image(img):
@@ -1045,28 +674,6 @@ def process_results_single(results:dict):
                 
 
     return plots
-
-def plot_results(results):
-    # TODO : Implement multiple keys support
-
-    plots = process_results_single(results)
-    measures = list(plots[list(plots.keys())[0]].keys())
-
-    fig, axs = plt.subplots(len(measures),1)
-    single = True if len(measures) == 1 else False
-    for i,measure in enumerate(measures):
-        x = plots['GT_to_model_GT'][measure]
-        y = plots['GT_to_model_pGT'][measure]
-        current_axe = axs[i] if not single else axs
-        
-        current_axe.scatter(x,y)
-        current_axe.set_title(f'Results for {measure} :', loc='center')
-        current_axe.grid()
-        # if measure == 'dc':
-        #     current_axe.set_xlim(left=0, right=1)
-        #     current_axe.set_ylim(bottom=0, top=1)
-    fig.suptitle("Plotted measures")
-    fig.tight_layout()
    
 def process_results(models, folder_GT, folder_pGT):
     count_nan = Count_nan()
