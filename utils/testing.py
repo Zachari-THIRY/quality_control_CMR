@@ -13,7 +13,7 @@ from batchgenerators.augmentations.utils import resize_segmentation
 from PIL import Image
 from scipy import stats
 
-from utils.dataset import AddPadding, CenterCrop, OneHot, DalaLoader
+from utils.dataset import AddPadding, CenterCrop, OneHot, DataLoader
 from utils.preprocess import preprocess, median_spacing_target
 
 
@@ -81,10 +81,10 @@ def generate_testing_set(ae , data_path:str, alter_image:Callable, transform, te
         )
     
 
-    test_loader = DalaLoader(data_path, mode='test', batch_size=BATCH_SIZE, transform=transform)
+    test_loader = DataLoader(data_path, mode='test', batch_size=BATCH_SIZE, transform=transform)
     
     # Evaluates the model data with the trained AE
-    _ = testing_brain(
+    _ = testing(
         ae=ae,
         test_loader=test_loader,
         patient_info=patient_info,
@@ -199,7 +199,7 @@ def postprocess_image(image: np.array, info: dict, phase:str, current_spacing:li
     return postprocessed
 
 #TODO : Generalise postprocessing
-def postprocess_image_brain(image, info, current_spacing):
+def postprocess_image(image, info, current_spacing):
     """
     Takes the input image along with some information, and applies reverse transformation from the preprocessing step.
 
@@ -231,45 +231,14 @@ def postprocess_image_brain(image, info, current_spacing):
     postprocessed[crop] = image
     return postprocessed
   
-def testing(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing):
-    ae.eval()
-    with torch.no_grad():
-        results = {"ED": {}, "ES": {}}
-        for patient in test_loader:
-            id = patient.dataset.id
-            prediction, reconstruction = [], []
-            for batch in patient: 
-                batch = {"prediction": batch.to(device)}
-                batch["reconstruction"] = ae.forward(batch["prediction"])
-                prediction = torch.cat([prediction, batch["prediction"]], dim=0) if len(prediction)>0 else batch["prediction"]
-                reconstruction = torch.cat([reconstruction, batch["reconstruction"]], dim=0) if len(reconstruction)>0 else batch["reconstruction"]
-            prediction = {
-                "ED": prediction[:len(prediction)//2].cpu().numpy(),
-                "ES": prediction[len(prediction)//2:].cpu().numpy()
-            }
-            reconstruction = {
-                "ED": reconstruction[:len(reconstruction)//2].cpu().numpy(),
-                "ES": reconstruction[len(reconstruction)//2:].cpu().numpy()
-            }
 
-            for phase in ["ED","ES"]:
-                reconstruction[phase] = postprocess_image(reconstruction[phase], patient_info[id], phase, current_spacing)
-                results[phase]["patient{:03d}".format(id)] = evaluate_metrics(
-                    nib.load(os.path.join(folder_predictions, "patient{:03d}_{}.nii.gz".format(id, phase))).get_fdata(),
-                    reconstruction[phase], 
-                    keys = ["_RV", "_MYO", "_LV"]
-                )
-                nib.save(
-                    nib.Nifti1Image(reconstruction[phase], patient_info[id]["affine"], patient_info[id]["header"]),
-                    os.path.join(folder_out, 'patient{:03d}_{}.nii.gz'.format(id, phase))
-                )
-    return results
-
-#TODO: Generalize testing
-#TODO: Add option to save results dict
-
-def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out, current_spacing, compute_results = True):
+def testing(ae, data_path:os.PathLike, test_loader:DataLoader, patient_info:dict='default', folder_predictions:os.PathLike='default', folder_out:os.PathLike='default', current_spacing:list='default', compute_results:bool = True):
     # Option compute_results was added so that if needed, results don't have to be computed
+
+    patient_info = np.load(os.path.join(data_path,'preprocessed/patient_info.npy'), allow_pickle=True).item() if patient_info=='default' else patient_info
+    current_spacing = median_spacing_target(os.path.join(data_path), 'preprocessed') if current_spacing=='default' else current_spacing
+    folder_predictions=os.path.join(data_path, 'structured') if folder_predictions==None else folder_predictions
+    folder_out = os.path.join(data_path, 'reconstructions')if folder_out==None else folder_out
     ae.eval()
     with torch.no_grad():
         results = {}
@@ -284,7 +253,7 @@ def testing_brain(ae, test_loader, patient_info, folder_predictions, folder_out,
             prediction = prediction.cpu().numpy(),
             reconstruction = reconstruction.cpu().numpy()
 
-            reconstruction = postprocess_image_brain(reconstruction, patient_info[id], current_spacing)
+            reconstruction = postprocess_image(reconstruction, patient_info[id], current_spacing)
             folder_out_patient = os.path.join(folder_out, "patient{:03d}".format(id))
             if compute_results :
                 results["patient{:03d}".format(id)] = evaluate_metrics(
