@@ -291,17 +291,23 @@ class AE(nn.Module):
         print(header)
         print(row)
 
-    def load_checkpoint(self, data_path, checkpoint_path:str='default', eval:bool=False ):
+    def load_checkpoint(self, data_path:os.PathLike='default', checkpoint_path:os.PathLike='default', eval:bool=False ):
         """
         Loads the model checkpoint, by default the last best saved.
+        Setting a value for checkpoint_path will override data_path default behaviour.
 
         Parameters
         ----------
-            checkpoint_path:str (default = 'default')
+            data_path: os.PathLike (default = 'default')
+                The root dir of the data (eg. data/brain), only useful is checkpoint_path isn't provided
+            checkpoint_path: os.PathLike (default = 'default')
                 If 'default' is set, then last best saved checkpoint will be loaded. Otherwise, provide path to custom checkpoint.
             eval:bool (default = False)
                 If set to True, ae.eval() will also be called. Leave to False for training.
         """
+
+        assert data_path != 'default' or checkpoint_path != 'default', "Either data_path or checkpoint_path must be provided"
+
         if checkpoint_path=='default':
             ckpt = os.path.join(data_path,"checkpoints/", sorted([file for file in os.listdir(os.path.join(data_path,"checkpoints")) if "_best" in file])[-1])
         else:
@@ -400,8 +406,6 @@ def hyperparameter_tuning(parameters, train_loader, val_loader, transform, trans
 ###############
 
 
-
-#TODO Rewrite this function in a cleaner manner
 def clean_old_checkpoints(ckpt_folder:str, best_keep:int=2, total_keep:int=10):
     """
         Is called after each training routine: will keep the {best_keep} best checkpoints, and the other most recent checkpoints for a total of {total_keep checkpoints}. 
