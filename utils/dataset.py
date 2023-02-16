@@ -7,7 +7,8 @@ from batchgenerators.augmentations.spatial_transformations import augment_spatia
 
 def train_val_test(data_path:str, ids_range:range='default', split=[0.70, 0.15, 0.15], shuffle = True, Force=False):
     """
-    Given the specified range, returns three shuffled (by default) arrays given the sppecified split.
+    Given the specified range, returns three shuffled (by default) arrays given the specified split.
+
 
     Parameters
     ----------
@@ -138,7 +139,8 @@ class SpatialTransform():
 ############################
 class DataLoader() :
     """
-    Loops through the patients, layer by layer.
+    Loops through the preprocessed patients, layer by layer.
+    Patients are .npy files.
 
 
     """
