@@ -1,6 +1,7 @@
 import os
 import gzip
 import shutil
+import warnings
 import numpy as np
 import nibabel as nib
 
@@ -17,11 +18,11 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> 
     Parameters
     ----------
         root_dir: str
-            The path in which to search for segmentations
+            The path in which to search for segmentations.
         keywords: list
-            The list of strings to search for a match
+            The list of strings to search for a match.
         absolute: bool
-            If True, absolute paths are returned
+            If True, absolute paths are returned.
     """
     assert type(keywords) != str, "Parameter keywords must be a list of str."
     segmentations = [[]]
@@ -55,7 +56,11 @@ def gunzip_and_replace(filePath:str):
         f_in.close()
     os.remove(filePath)
 
-def structure_dataset(segmentation_paths:list, data_path:str, destination_folder:str = 'structured', fileName: str="mask.nii.gz", delete: list=None) -> None:
+def structure_dataset(segmentation_paths:list, 
+                      data_path:str,    
+                      destination_folder:str = 'structured', 
+                      fileName: str="mask.nii.gz", 
+                      delete: list=None) -> None:
     """
     This method uniformizes the dataset so that all other functions work on the same directory architecture.
     All segmentations pointed by segmentation_paths will be moved to destination_folder/patientXXX/fileName
@@ -128,9 +133,15 @@ def crop_image(image):
     resizer = tuple([slice(*i) for i in zip(minidx,maxidx)])
     return resizer
 
-def generate_patient_info(data_path:str, dataset_folder:str='structured', fileName: str="mask.nii.gz", skip:list = [], verbose: bool = False, verbose_rate: int = 10):
+def generate_patient_info(data_path:str, 
+                          dataset_folder:os.PathLike='structured',
+                          fileName: str="mask.nii.gz", 
+                          skip:list = [], 
+                          verbose: bool = False, 
+                          verbose_rate: int = 10):
     """
-    Generates patient info from the structructured dataset in folder, based on the fileName files.\n
+    Generates patient info from the structructured dataset in dataset_folder, based on the files named fileName.\n
+    Saves and outputs a dictionary of patients informations, with patient_id as key and gathers some information (see Gathered information)
 
     Parameters
     ----------
@@ -208,7 +219,9 @@ def median_spacing_target(folder: str, round=2) -> list:
 
 def preprocess_image(image, crop, spacing, spacing_target):
     """
-    Returns a cropped and resized version of the image according to the specified attributes
+    Crops the input image into the smallest block strictly containing all the segmentation (removing black edges), and changes
+    spacing from spacing to spacing_target.
+    Returns the modified image;
 
     Parameters
     ----------
@@ -231,11 +244,20 @@ def preprocess_image(image, crop, spacing, spacing_target):
     image = resize_segmentation(image, new_shape, order=1)
     return image, new_shape
 
-def preprocess(data_path:str, patient_ids: range='default' , patient_info:dict='default', spacing_target:list='default', alter_image:Callable=None, skip: list = [], verbose: bool = False) -> None: 
-    # TODO : Remove hardcoded folders
+def preprocess(data_path:str, 
+               patient_ids: range='default', 
+               patient_info:dict='default', 
+               spacing_target:list='default', 
+               alter_image:Callable=None, 
+               skip: list = [], 
+               verbose: bool = False
+               ) -> None: 
     """
     Produces a .npy for each given patient, it calls process_image and places the output in a new structured tree with root folder_out.\n
-    preprocess() also updates the patient_info[id]["processed_shape"] the reflect the new shape from the preprocess.
+    preprocess() also updates the patient_info[id]["processed_shape"] the reflect the new shape from the preprocess.\n
+    - If patient_info is not found, new patient_info will be generated.\n
+    - If alter_image is set, then new altered nii images will be generated into {data_path}/measures/structured_model.
+    - If alter_image is set, preprocessed images will be saved in measures/preprocessed_model.
 
     Parameters:
     -----------
@@ -256,10 +278,18 @@ def preprocess(data_path:str, patient_ids: range='default' , patient_info:dict='
 
     """
     folder_in = os.path.join(data_path, 'structured')
-    folder_out = os.path.join(data_path, 'preprocessed')
+    folder_out = os.path.join(data_path, 'preprocessed'if alter_image==None else 'measures/preprocessed_model') 
     get_patient_folder = lambda folder, id: os.path.join(folder, 'patient{:03d}'.format(id))
     get_fname = lambda : "mask.nii.gz"
-    patient_info = np.load(os.path.join(data_path, 'preprocessed/patient_info.npy'), allow_pickle=True).item() if patient_info == 'default' else patient_info
+
+    # Getting patient_info
+    if patient_info=='default' and os.path.isfile(os.path.join(data_path), 'processed/patient_info.npy'):
+        patient_info = np.load(os.path.join(data_path, 'preprocessed/patient_info.npy'), allow_pickle=True).item()
+    if patient_info=='default' and not os.path.isfile(os.path.join(data_path), 'processed/patient_info.npy'):
+        message="patient_info doesn't exist, generating new patient_info from {data_path}/structured"
+        warnings.warn(message, FileNotFoundError)
+        patient_info = generate_patient_info(data_path)
+
     
     spacing_target = median_spacing_target(os.path.join(data_path, 'preprocessed')) if spacing_target=='default' else spacing_target
 
