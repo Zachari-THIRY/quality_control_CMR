@@ -6,23 +6,27 @@ import numpy as np
 import nibabel as nib
 
 from typing import Callable
+from utils.common import ignore_directories
 
 from scipy.ndimage import binary_fill_holes
 from batchgenerators.augmentations.utils import resize_segmentation
 
-def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> list :
+def find_segmentations(root_dir:os.PathLike, keywords: list, absolute: bool = False) -> list :
     """
     Returns a list of all the paths to segmentations matching the keywords list. 
     If absolute is True, then absolute paths are returned. Otherwise, relative paths are given.
 
     Parameters
     ----------
-        root_dir: str
-            The path in which to search for segmentations.
-        keywords: list
-            The list of strings to search for a match.
-        absolute: bool
-            If True, absolute paths are returned.
+    root_dir : os.PathLike
+        The path in which to search for segmentations.
+    keywords : list
+        The list of strings to search for a match.
+    absolute : bool
+        If True, absolute paths are returned.
+    Returns
+    -------
+    np.ndarray : the list of segmentations
     """
     assert type(keywords) != str, "Parameter keywords must be a list of str."
     segmentations = [[]]
@@ -38,6 +42,41 @@ def find_segmentations(root_dir:str, keywords: list, absolute: bool = False) -> 
                     segmentations.append(path)
         
     return np.unique(np.hstack(segmentations))
+
+def find_pairs(root_dir:os.PathLike, mask_keywords, image_keywords, absolute:bool=False):
+    """
+    This function returns a mask_paths, image_paths for all segmentations found in the root dir, where a pair image/mask is found.
+    This avoids having to deal with unpaired masks and image in case of an incomplete dataset
+
+    Parameters
+    ----------
+    root_dir:os.PathLike
+        The path in which to search for segmentations.
+    mask_keywords: list
+        The list of strings to search for a match in masks.
+    image_keywords: list
+        The list of strings to search for a match in images.
+    absolute: bool
+        If True, absolute paths are returned.
+
+    Returns
+    -------
+    Filtered paths for : 
+    (masks, images)
+    """
+    mask_paths = find_segmentations(root_dir = root_dir, keywords = mask_keywords, absolute = absolute)
+    image_paths = find_segmentations(root_dir = root_dir, keywords = image_keywords, absolute = absolute)
+    ignore = ignore_directories(mask_paths, image_paths)
+    filtered_masks = []
+    for p in mask_paths:
+        if not any ([i in p for i in ignore]):
+            filtered_masks.append(p)
+    filtered_images = []
+    for p in image_paths:
+        if not any ([i in p for i in ignore]):
+            filtered_images.append(p)
+    
+    return filtered_masks, filtered_images
 
 def gunzip_and_replace(filePath:str):
     """
@@ -56,10 +95,12 @@ def gunzip_and_replace(filePath:str):
         f_in.close()
     os.remove(filePath)
 
-def structure_dataset(segmentation_paths:list, 
-                      data_path:str,    
+def structure_dataset(data_path:str,
+                      mask_paths:os.PathLike,     
+                      image_paths: os.PathLike = None,
                       destination_folder:str = 'structured', 
-                      fileName: str="mask.nii.gz", 
+                      maskName: str="mask.nii.gz", 
+                      imageName: str="image.nii.gz", 
                       delete: list=None) -> None:
     """
     This method uniformizes the dataset so that all other functions work on the same directory architecture.
@@ -84,28 +125,48 @@ def structure_dataset(segmentation_paths:list,
         The limit can be removed if the patient folder names are adjusted throughout the code.
 
     """
-    for path in segmentation_paths :
-        assert path.endswith("nii.gz") or path.endswith('.nii'), f"segmentation must be of type .nii or .nii.gz but {path} was given"
+    for path in mask_paths :
+        assert path.endswith("nii.gz") or path.endswith('.nii'), f"segmentation must be of type .nii or .nii.gz but {path} was given."
+    if image_paths is not None:
+        for path in image_paths :
+            assert path.endswith("nii.gz") or path.endswith('.nii'), f"image must be of type .nii or .nii.gz but {path} was given."
 
-    assert fileName.endswith(".nii.gz"), "fileName must end with .nii.gz"
-    assert(len(segmentation_paths) <=1000 ), "Dataset is too large. Make sure N <= 1000"
+    assert maskName.endswith(".nii.gz"), "`maskName` must end with .nii.gz"
+    assert imageName.endswith(".nii.gz"), "`fileName` must end with .nii.gz"
+    assert(len(mask_paths) <=1000 ), "Dataset is too large. Make sure N <= 1000"
 
     destination_folder = os.path.join(data_path, destination_folder)
 
     os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
     
-    segmentation_paths.sort()
+    mask_paths.sort()
     destination_folder = os.path.join(os.getcwd(), destination_folder)
     os.makedirs(destination_folder) if not os.path.exists(destination_folder) else None
-    for i,segmentation_path in enumerate(segmentation_paths):
-        convert = True if segmentation_path.endswith(".nii") else False
 
+
+    for i in range(len(mask_paths)):
+        mask_path = mask_paths[i]
+        image_path = image_paths[i] if image_paths is not None else None
+        convert_mask = True if mask_path.endswith(".nii") else False
+        if image_path is not None: 
+                convert_image = True if image_path.endswith(".nii") else False
+        else : convert_image = False
+        # Creating the patient folder
         patient_target_folder = os.path.join(destination_folder, "patient{:03d}".format(i))
         os.makedirs(patient_target_folder) if not os.path.exists(patient_target_folder) else None
-        target_name = os.path.join(patient_target_folder, fileName[:-3]) if convert else os.path.join(patient_target_folder, fileName)
-        os.rename(segmentation_path, target_name)
-        if convert : gunzip_and_replace(target_name)
 
+        # Changing target names according to .nii or .nii.gz extensions
+        target_name_mask = os.path.join(patient_target_folder, maskName[:-3]) if convert_mask else os.path.join(patient_target_folder, maskName)
+        target_name_image = os.path.join(patient_target_folder, imageName[:-3]) if convert_image else os.path.join(patient_target_folder, imageName)
+
+        # Moves elements from the initial path to the target path (by default in {data_path}/structured/{patient_folder})
+        # Then converts it if needed
+        
+        os.rename(mask_path, target_name_mask)
+        if convert_mask : gunzip_and_replace(target_name_mask)
+
+        if image_paths is not None : os.rename(image_path, target_name_image)
+        if convert_image: gunzip_and_replace(target_name_image)
 
     if delete is not None:
         delete = np.array([delete]) if type(delete) == str else delete # Making delete iterable in case it's a simple string
